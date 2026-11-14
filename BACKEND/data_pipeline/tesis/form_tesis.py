@@ -1,65 +1,74 @@
 #!/usr/bin/env python3
-"""S2 step 1: TESIS selection from raw ISIC 2019 (preparation phase, CRISP-DM).
+"""Paso 1 de S2: formación de TESIS desde el ISIC 2019 crudo (fase de preparación, CRISP-DM).
 
-Forms TESIS: 30 subsets x 15 images sampled from the ISIC 2019 training set
-with a fixed seed from BACKEND/data_pipeline/config.json. Each subset holds
->= min_bcc_per_subset BCC images (guided sampling, not raw random). Images may
-repeat across subsets. The TEST split of ISIC 2019 is never touched.
+Forma TESIS: 30 subconjuntos × 15 imágenes muestreadas del set de training de
+ISIC 2019 con una semilla fija desde BACKEND/data_pipeline/config.json. Cada
+subconjunto contiene >= min_bcc_per_subset imágenes BCC (muestreo guiado, no
+random crudo). Las imágenes pueden repetirse entre subconjuntos. El split TEST
+de ISIC 2019 nunca se toca.
 
-WHAT TESIS IS AND WHY IT EXISTS
--------------------------------
-TESIS is the demo/evidence pack for the thesis: 30 small, self-contained
-subsets of 15 dermoscopic images each (450 picked images, images may repeat
-across subsets). It exists so the final app can be demonstrated and scored on
-images that are pinned, hashed and excluded from training — otherwise any
-"demo accuracy" number would be meaningless because the model may have
-memorized those images during fine-tuning.
+QUÉ ES TESIS Y POR QUÉ EXISTE
+-----------------------------
+TESIS es el paquete de demo/evidencia de la tesis: 30 subconjuntos pequeños y
+autocontenidos de 15 imágenes dermatoscópicas cada uno (450 imágenes elegidas,
+pueden repetirse entre subconjuntos). Existe para que la app final pueda
+demostrarse y medirse sobre imágenes selladas, hasheadas y excluidas del
+entrenamiento — de lo contrario cualquier número de "exactitud de demo" carecería
+de sentido, porque el modelo podría haber memorizado esas imágenes durante el
+fine-tuning.
 
-Three consequences of that purpose drive every design decision here:
+Tres consecuencias de ese propósito guían cada decisión de diseño aquí:
 
-  1. Reproducibility: the subset selection is fully determined by the fixed
-     project seed (config.json -> "seed": 42). Re-running this script on the
-     same dataset yields the identical manifest. 42 is the project-wide seed
-     (audits, splits, training) so one constant explains the whole pipeline
-     in the thesis. Any change to sampling order, list contents or RNG calls
-     changes subsets — which is why the code is append-only stable and must
-     never be "cleaned up" cosmetically.
-  2. Exclusion from training: every picked id is listed in
-     `tesis_exclude.csv`. Downstream split formation (70/20/10, grouped by
-     lesion_id, stratified) MUST exclude these ids so TESIS stays a clean,
-     never-trained probe set. The same fixed seed is what lets any third
-     party regenerate this exact exclusion list and verify it (seed ->
-     subsets -> exclusion list is a pure function of the raw dataset).
-  3. Guided sampling, not raw random: BCC is ~13.1% of the training set
-     (3,323 / 25,331). A raw uniform 15-image subset would carry a BCC
-     count distributed around ~2 per subset, frequently 0-1 — useless for a
-     demo whose purpose is BCC screening. Instead each subset is composed
-     of exactly `min_bcc_per_subset` BCC images plus the remainder drawn
-     from the non-BCC pool, i.e. we sample the composition, not the
-     fairness. This is deliberate oversampling of the positive class in the
-     demo pack ONLY; it has no effect on training data or metrics.
+  1. Reproducibilidad: la selección de subconjuntos queda totalmente
+     determinada por la semilla fija del proyecto (config.json -> "seed": 42).
+     Reejecutar este script sobre el mismo dataset produce el manifiesto
+     idéntico. 42 es la semilla de todo el proyecto (auditorías, splits,
+     entrenamiento), de modo que una sola constante explica todo el pipeline en
+     la tesis. Cualquier cambio en el orden de muestreo, en el contenido de
+     las listas o en las llamadas al RNG altera los subconjuntos — por eso el
+     código es estable y nunca debe "limpiarse" cosméticamente.
+  2. Exclusión del entrenamiento: cada id elegido queda listado en
+     `tesis_exclude.csv`. La formación posterior de splits (70/20/10, agrupada
+     por lesion_id, estratificada) DEBE excluir estos ids para que TESIS siga
+     siendo un conjunto sonda limpio, nunca entrenado. La misma semilla fija es
+     lo que permite a cualquier tercero regenerar exactamente esta lista de
+     exclusión y verificarla (semilla -> subconjuntos -> lista de exclusión es
+     una función pura del dataset crudo).
+  3. Muestreo guiado, no random crudo: BCC es ~13,1 % del set de training
+     (3.323 / 25.331). Un subconjunto uniforme de 15 imágenes llevaría un
+     conteo de BCC distribuido alrededor de ~2 por subconjunto, con frecuencia
+     0-1 — inútil para una demo cuyo propósito es el tamizaje de BCC. En su
+     lugar cada subconjunto se compone de exactamente `min_bcc_per_subset`
+     imágenes BCC más el remate extraído del pool no-BCC, es decir, muestreamos
+     la composición, no la equidad. Es un sobremuestreo deliberado de la clase
+     positiva SOLO en el paquete de demo; no afecta a los datos de
+     entrenamiento ni a las métricas.
 
-This script reads ONLY the training zip and training GT/metadata CSVs. The
-ISIC 2019 TEST split is never opened, listed, hashed or copied — it has no
-lesion_id, ~24.9% UNK labels and is reserved exclusively for final
-evaluation. Do not add any code path that references the test files here.
+Este script lee ÚNICAMENTE el zip de training y los CSV GT/metadata de
+training. El split TEST de ISIC 2019 nunca se abre, lista, hashea ni copia — no
+tiene lesion_id, ~24,9 % de etiquetas UNK y se reserva exclusivamente para la
+evaluación final. No agregues aquí ningún camino de código que referencie los
+archivos de test.
 
-OUTPUTS (under --out-dir, default resultados/s2-tesis/)
--------------------------------------------------------
-  tesis_manifest.csv  one row per (subset_id, image_id) pick with label,
-                      sha256 of the copied file and original zip entry path
-  tesis_exclude.csv   deduplicated image_id list to exclude from training
-                      splits (columns image_id, label_full)
-  summary.json        run receipt: seed, config, counts, min BCC per subset,
-                      class distribution of picks, artifact provenance
-  README-corrida.md   (written by a follow-up step, not by this script)
+SALIDAS (bajo --out-dir, por defecto resultados/s2-tesis/)
+----------------------------------------------------------
+  tesis_manifest.csv  una fila por pick (subset_id, image_id) con etiqueta,
+                      sha256 del archivo copiado y la ruta de entrada original
+                      dentro del zip
+  tesis_exclude.csv   lista deduplicada de image_id a excluir de los splits de
+                      entrenamiento (columnas image_id, label_full)
+  summary.json        recibo de la corrida: semilla, config, conteos, mínimo de
+                      BCC por subconjunto, distribución de clases de los picks,
+                      procedencia de los artefactos
+  README-corrida.md   (lo escribe un paso posterior, no este script)
 
-The copied images land in TESIS/<subset_id>/<isic_id>.jpg (under the workspace
-root, outside the repo), never in .git — see .gitignore rules for TESIS/.
+Las imágenes copiadas aterrizan en TESIS/<subset_id>/<isic_id>.jpg (bajo la
+raíz del workspace, fuera del repo), nunca en .git — ver las reglas de
+.gitignore para TESIS/.
 
-Usage:
-    uv run python form_tesis.py                 # form TESIS and write artifacts
-    uv run python form_tesis.py --force         # overwrite existing TESIS/ copies
+Uso:
+    uv run python form_tesis.py                 # forma TESIS y escribe artefactos
+    uv run python form_tesis.py --force         # sobrescribe las copias TESIS/ existentes
     uv run python form_tesis.py --verificar resultados/s2-tesis/tesis_manifest.csv
 """
 
@@ -76,16 +85,16 @@ from pathlib import Path
 
 import pandas as pd
 
-# Repository layout: APP_DERMICA/ is the workspace container; dermica-bcc/ is
-# the git repo inside it and this file lives at BACKEND/data_pipeline/tesis/.
+# Layout del repo: APP_DERMICA/ es el contenedor del workspace; dermica-bcc/ es
+# el repo git dentro de él y este archivo vive en BACKEND/data_pipeline/tesis/.
 # parents[0]=tesis/, parents[1]=data_pipeline/, parents[2]=BACKEND/,
-# parents[3]=dermica-bcc/, parents[4]=APP_DERMICA/ (holds DATA_CRUDA/,
-# resultados/, TESIS/). Resolved from __file__ so CWD does not matter.
+# parents[3]=dermica-bcc/, parents[4]=APP_DERMICA/ (contiene DATA_CRUDA/,
+# resultados/, TESIS/). Se resuelve desde __file__ para que el CWD no importe.
 APP_ROOT = Path(__file__).resolve().parents[4]  # .../APP_DERMICA
 
-# config.json sits next to this pipeline (data_pipeline/config.json). It is
-# the single source of truth for the seed and the TESIS shape; do not inline
-# these values — the thesis cites config.json as the frozen contract.
+# config.json vive junto a este pipeline (data_pipeline/config.json). Es la
+# única fuente de verdad para la semilla y la forma de TESIS; no incrustes estos
+# valores — la tesis cita config.json como contrato congelado.
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
 DEFAULT_DATA_DIR = APP_ROOT / "DATA_CRUDA"
 DEFAULT_OUT_DIR = APP_ROOT / "resultados" / "s2-tesis"
@@ -94,37 +103,39 @@ TRAIN_ZIP = "ISIC_2019_Training_Input.zip"
 GT_TRAIN = "ISIC_2019_Training_GroundTruth.csv"
 META_TRAIN = "ISIC_2019_Training_Metadata.csv"
 
-# One-hot column order exactly as shipped by the ISIC 2019 GroundTruth CSV.
-# Used for label resolution via idxmax (the GT is single-label: exactly one
-# column is hot per row, enforced upstream by the S1 audit). SCC is present
-# in the GT format although unused elsewhere in the pipeline.
+# Orden de columnas one-hot exactamente como lo entrega el CSV GroundTruth de
+# ISIC 2019. Se usa para resolver la etiqueta vía idxmax (el GT es
+# mono-etiqueta: exactamente una columna en hot por fila, invariante que
+# garantiza la auditoría S1 antes de llegar aquí). SCC está presente en el
+# formato GT aunque no se usa en el resto del pipeline.
 CLASS_COLS = ["MEL", "NV", "BCC", "AK", "BKL", "DF", "VASC", "SCC", "UNK"]
 
-# Top-level folder INSIDE the training zip; entries are addressed as
-# f"{ZIP_PREFIX}{image_id}.jpg". The zip is never mass-extracted — each
-# picked entry is streamed individually (see the copy loop in form()).
+# Carpeta de primer nivel DENTRO del zip de training; las entradas se direccionan
+# como f"{ZIP_PREFIX}{image_id}.jpg". El zip nunca se extrae masivamente: cada
+# entrada elegida se transmite individualmente (ver el bucle de copia en form()).
 ZIP_PREFIX = "ISIC_2019_Training_Input/"
 
 
 def sha256_file(path: Path) -> str:
-    """Return the hex SHA-256 digest of a file, streamed in 1 MiB chunks.
+    """Devuelve el digest SHA-256 hexadecimal de un archivo, en chunks de 1 MiB.
 
-    Parameters
+    Parámetros
     ----------
     path : Path
-        File to hash. Read fully once; nothing is modified.
+        Archivo a hashear. Se lee completo una vez; no se modifica nada.
 
-    Returns
+    Retorno
     -------
     str
-        Lowercase hex digest (64 chars).
+        Digest hex en minúsculas (64 chars).
 
-    Side effects
-    ------------
-    None (read-only). Chunked reading keeps memory O(1 MiB); the hash is
-    computed on the COPIED file on disk (not on the zip entry bytes in
-    memory), so the manifest proves what was actually written to TESIS/,
-    which is what --verificar re-checks.
+    Efectos colaterales
+    -------------------
+    Ninguno (solo lectura). La lectura en chunks mantiene la memoria en
+    O(1 MiB); el hash se calcula sobre el archivo COPIADO en disco (no sobre
+    los bytes de la entrada del zip en memoria), así que el manifiesto prueba
+    lo que realmente se escribió en TESIS/, que es lo que --verificar
+    vuelve a comprobar.
     """
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -134,24 +145,25 @@ def sha256_file(path: Path) -> str:
 
 
 def load_train_labels(data_dir: Path) -> pd.Series:
-    """Load training GT and resolve the single label per image.
+    """Carga el GT de training y resuelve la etiqueta única por imagen.
 
-    Parameters
+    Parámetros
     ----------
     data_dir : Path
-        Root of DATA_CRUDA containing GT_TRAIN.
+        Raíz de DATA_CRUDA que contiene GT_TRAIN.
 
-    Returns
+    Retorno
     -------
     pd.Series
-        Series indexed by image id (gt["image"]) whose values are the class
-        name with the hot one-hot column. idxmax works because the GT is
-        single-label (one column = 1 per row); ties are impossible by that
-        invariant, and the S1 audit enforces it before this runs.
+        Serie indexada por id de imagen (gt["image"]) cuyos valores son el
+        nombre de la clase cuya columna one-hot está en hot. idxmax funciona
+        porque el GT es mono-etiqueta (una columna = 1 por fila); los empates
+        son imposibles por ese invariante, y la auditoría S1 lo garantiza antes
+        de que esto se ejecute.
 
-    Side effects
-    ------------
-    Read-only CSV parse. Does NOT open the ISIC test GT.
+    Efectos colaterales
+    -------------------
+    Parseo del CSV en solo lectura. NO abre el GT de test de ISIC.
     """
     gt = pd.read_csv(data_dir / GT_TRAIN)
     labels = gt[CLASS_COLS].idxmax(axis=1)
@@ -160,38 +172,41 @@ def load_train_labels(data_dir: Path) -> pd.Series:
 
 
 def pick_subset(rng: random.Random, bcc_ids: list, rest_ids: list, n_bcc: int, n_total: int) -> list:
-    """Draw one subset: n_bcc BCC ids + (n_total - n_bcc) non-BCC ids, shuffled.
+    """Extrae un subconjunto: n_bcc ids BCC + (n_total - n_bcc) ids no-BCC, barajados.
 
-    Parameters
+    Parámetros
     ----------
     rng : random.Random
-        Seeded generator (seed 42 from config.json). The CALLER owns the RNG
-        so all 30 subsets are produced by one deterministic sequence; each
-        pick_subset call consumes rng state in a fixed order.
+        Generador seedeado (semilla 42 desde config.json). El RNG es propiedad
+        del LLAMADOR, de modo que los 30 subconjuntos salen de una única
+        secuencia determinista; cada llamada a pick_subset consume estado del
+        rng en un orden fijo.
     bcc_ids : list
-        All training image ids whose label is BCC (~3,323). Sampling is with
-        replacement ACROSS subsets (subsets are drawn independently), so the
-        same BCC image may appear in several subsets — intended by
-        "repeat_across_subsets": true in config.json. Within one subset,
-        rng.sample guarantees no duplicate.
+        Todos los ids de imagen de training cuya etiqueta es BCC (~3.323). El
+        muestreo es con reemplazo ENTRE subconjuntos (los subconjuntos se
+        sortean de forma independiente), así que la misma imagen BCC puede
+        aparecer en varios subconjuntos — previsto por
+        "repeat_across_subsets": true en config.json. Dentro de un mismo
+        subconjunto, rng.sample garantiza cero duplicados.
     rest_ids : list
-        All training image ids whose label is NOT BCC.
+        Todos los ids de imagen de training cuya etiqueta NO es BCC.
     n_bcc : int
-        BCC images to draw (config "min_bcc_per_subset", default 5). This is
-        the guided part: fixed positive-class composition per subset.
+        Imágenes BCC a extraer (config "min_bcc_per_subset", default 5). Esta
+        es la parte guiada: composición fija de la clase positiva por
+        subconjunto.
     n_total : int
-        Subset size (config "images_per_subset", default 15).
+        Tamaño del subconjunto (config "images_per_subset", default 15).
 
-    Returns
+    Retorno
     -------
     list
-        n_total image ids, shuffled so the manifest row order does not encode
-        "first the BCC picks, then the rest" (the shuffled order is what the
-        copy loop and the manifest preserve).
+        n_total ids de imagen, barajados para que el orden de filas del
+        manifiesto no codifique "primero los picks BCC, luego el resto" (el
+        orden barajado es el que conserva el bucle de copia y el manifiesto).
 
-    Side effects
-    ------------
-    Advances rng state. Touches no files.
+    Efectos colaterales
+    -------------------
+    Avanza el estado de rng. No toca archivos.
     """
     picks = rng.sample(bcc_ids, n_bcc) + rng.sample(rest_ids, n_total - n_bcc)
     rng.shuffle(picks)
@@ -199,45 +214,47 @@ def pick_subset(rng: random.Random, bcc_ids: list, rest_ids: list, n_bcc: int, n
 
 
 def form(data_dir: Path, out_dir: Path, tesis_dir: Path, force: bool) -> int:
-    """Form the TESIS subsets, copy the images and write all artifacts.
+    """Forma los subconjuntos TESIS, copia las imágenes y escribe todos los artefactos.
 
-    Steps:
-      1. Read config.json (seed + TESIS shape). Note: config values are
-         trusted, not validated — a config with subsets*images_per_subset
-         mismatched against available BCC ids would fail at rng.sample with a
-         clear error, which is acceptable for a one-shot pipeline step.
-      2. Load training labels; split ids into BCC / rest pools.
-      3. Refuse to overwrite a non-empty TESIS/ unless force=True — the
-         guard exists so a re-run cannot silently mix stale and fresh
-         copies under different seeds.
-      4. Draw the 30 subsets from ONE seeded RNG (order: subset_01..30).
-      5. Stream-copy each picked entry from the training zip into
-         TESIS/<subset_id>/<image_id>.jpg (1 MiB chunks, never via extractall)
-         and hash the copied file on disk.
-      6. Write tesis_manifest.csv, tesis_exclude.csv (deduplicated ids) and
-         summary.json; print a one-line receipt.
+    Pasos:
+      1. Lee config.json (semilla + forma de TESIS). Nota: los valores de
+         config se confían tal cual, sin validarse — un config con
+         subsets*images_per_subset desproporcionado respecto a los ids BCC
+         disponibles fallaría en rng.sample con un error claro, aceptable para
+         un paso de pipeline de una sola sentada.
+      2. Carga las etiquetas de training; separa los ids en pools BCC / resto.
+      3. Se niega a sobrescribir un TESIS/ no vacío salvo que force=True — la
+         guarda existe para que una reejecución no mezcle en silencio copias
+         viejas y nuevas con semillas distintas.
+      4. Sortea los 30 subconjuntos desde UN único RNG seedeado
+         (orden: subset_01..30).
+      5. Copia por streaming cada entrada elegida desde el zip de training a
+         TESIS/<subset_id>/<image_id>.jpg (chunks de 1 MiB, nunca extractall) y
+         hashea el archivo copiado en disco.
+      6. Escribe tesis_manifest.csv, tesis_exclude.csv (ids deduplicados) y
+         summary.json; imprime un recibo de una línea.
 
-    Parameters
+    Parámetros
     ----------
     data_dir : Path
-        Root of DATA_CRUDA.
+        Raíz de DATA_CRUDA.
     out_dir : Path
-        Destination of the manifest/exclusion/summary artifacts.
+        Destino de los artefactos manifiesto/exclusión/resumen.
     tesis_dir : Path
-        Destination of the copied images (TESIS/<subset_id>/...).
+        Destino de las imágenes copiadas (TESIS/<subset_id>/...).
     force : bool
-        If True, allow writing into an existing non-empty tesis_dir.
+        Si True, permite escribir en un tesis_dir existente no vacío.
 
-    Returns
+    Retorno
     -------
     int
-        0 on success; 1 if tesis_dir exists and is non-empty without force.
+        0 en caso de éxito; 1 si tesis_dir existe y no está vacío sin force.
 
-    Side effects
-    ------------
-    Creates tesis_dir and out_dir; writes ~450+ jpg copies and three
-    artifacts. Never writes into data_dir. Never opens the ISIC test zip or
-    test CSVs.
+    Efectos colaterales
+    -------------------
+    Crea tesis_dir y out_dir; escribe ~450+ copias jpg y tres artefactos.
+    Nunca escribe en data_dir. Nunca abre el zip de test de ISIC ni los CSV de
+    test.
     """
     t0 = time.time()
     cfg = json.loads(CONFIG_PATH.read_text())
@@ -262,8 +279,8 @@ def form(data_dir: Path, out_dir: Path, tesis_dir: Path, force: bool) -> int:
     for i in range(1, n_subsets + 1):
         subset_picks[f"subset_{i:02d}"] = pick_subset(rng, bcc_ids, rest_ids, min_bcc, per_subset)
 
-    # Copy images out of the training zip one entry at a time. No mass
-    # extraction: only the picked (~450, fewer unique) images are written.
+    # Copia las imágenes del zip de training una entrada a la vez. Sin
+    # extracción masiva: solo se escriben los picks (~450, menos únicos).
     zip_path = data_dir / TRAIN_ZIP
     copied = 0
     rows = []
@@ -296,11 +313,11 @@ def form(data_dir: Path, out_dir: Path, tesis_dir: Path, force: bool) -> int:
         w.writeheader()
         w.writerows(rows)
 
-    # Deduplicate: the manifest carries 450 rows (30 x 15), but an image
-    # repeated across subsets appears under several rows. The exclusion list
-    # is over ids, so it collapses to the unique set; labels are looked up
-    # from the GT series (same source as the manifest — consistent by
-    # construction).
+    # Deduplicar: el manifiesto lleva 450 filas (30 × 15), pero una imagen
+    # repetida entre subconjuntos aparece bajo varias filas. La lista de
+    # exclusión es sobre ids, así que colapsa al conjunto único; las etiquetas
+    # se buscan en la serie del GT (misma fuente que el manifiesto — consistentes
+    # por construcción).
     unique_ids = sorted({r["image_id"] for r in rows})
     exclude = out_dir / "tesis_exclude.csv"
     ex_labels = labels[unique_ids]
@@ -323,9 +340,9 @@ def form(data_dir: Path, out_dir: Path, tesis_dir: Path, force: bool) -> int:
         "bcc_per_subset": per_subset_bcc,
         "class_distribution_picks": {k: int(v) for k, v in class_counts.items()},
         "bcc_picks": int(sum(1 for r in rows if r["label_full"] == "BCC")),
-        # Post-conditions recorded explicitly so the receipt shows they were
-        # checked at generation time, not merely hoped for: every subset
-        # meets min_bcc and every picked id exists in the training GT.
+        # Postcondiciones registradas explícitamente para que el recibo muestre
+        # que se comprobaron al generar, no que se dieron por sentadas: cada
+        # subconjunto cumple min_bcc y cada id elegido existe en el GT de training.
         "min_bcc_ok": all(v >= min_bcc for v in per_subset_bcc.values()),
         "all_ids_in_train": all(i in labels.index for i in unique_ids),
         "zip_source": TRAIN_ZIP,
@@ -340,51 +357,55 @@ def form(data_dir: Path, out_dir: Path, tesis_dir: Path, force: bool) -> int:
 
 
 def verificar(manifest_path: Path) -> int:
-    """Re-verify a tesis_manifest.csv against GT, config and the copied files.
+    """Reverifica un tesis_manifest.csv contra el GT, la config y los archivos copiados.
 
-    Checks (every check runs; no short-circuit, so ALL failures are printed):
-      1. manifest has exactly subsets*images_per_subset rows (30*15=450);
-      2. subset_id set is exactly subset_01..subset_<n_subsets>;
-      3. every subset has exactly images_per_subset rows;
-      4. every image_id exists in the training GT (no contamination from the
-         test split or outside ids);
-      5. manifest label_full matches the GT label for each id;
-      6. every subset holds >= min_bcc BCC images (the guided-sampling
-         contract);
-      7. every copied file exists at TESIS/<subset_id>/<image_id>.jpg and its
-         SHA-256 matches the manifest — i.e. the copies on disk are exactly
-         what was picked, not stale overwrites from an older run.
+    Chequeos (todos se ejecutan; sin salida temprana, así se imprimen todos los
+    fallos):
+      1. el manifiesto tiene exactamente subsets*images_per_subset filas (30*15=450);
+      2. el conjunto de subset_id es exactamente subset_01..subset_<n_subsets>;
+      3. cada subconjunto tiene exactamente images_per_subset filas;
+      4. cada image_id existe en el GT de training (sin contaminación del split
+         test ni ids ajenos);
+      5. el label_full del manifiesto coincide con la etiqueta del GT para cada id;
+      6. cada subconjunto contiene >= min_bcc imágenes BCC (el contrato de
+         muestreo guiado);
+      7. cada archivo copiado existe en TESIS/<subset_id>/<image_id>.jpg y su
+         SHA-256 coincide con el del manifiesto — es decir, las copias en disco
+         son exactamente lo que se eligió, no sobreescrituras viejas de una
+         corrida anterior.
 
-    Why StratifiedGroupKFold (not a plain random shuffle) for the downstream
-    split — context for what this manifest protects: after TESIS ids are
-    excluded, the training partition still contains multiple images per
-    lesion_id (same lesion, different frames). A random image-level shuffle
-    would scatter near-identical lesion crops across train/val/test, leaking
-    lesion-specific signal and inflating every metric. The split must group
-    by lesion_id (no lesion in two partitions) and keep the BCC prevalence
-    (~13.1%) balanced across partitions — hence a STRATIFIED, GROUPED fold
-    (StratifiedGroupKFold), never RandomShuffleSplit. TESIS exclusion is the
-    first half of that hygiene; this verifier is the receipt that TESIS is a
-    clean held-out probe set.
+    Por qué StratifiedGroupKFold (y no un shuffle random plano) en el split
+    posterior — contexto de lo que este manifiesto protege: tras excluir los
+    ids de TESIS, la partición de training sigue conteniendo varias imágenes
+    por lesion_id (la misma lesión, tomas distintas). Un shuffle aleatorio a
+    nivel de imagen dispersaría recortes casi idénticos de la misma lesión
+    entre train/val/test, filtrando señal específica de la lesión e inflando
+    todas las métricas. El split debe agrupar por lesion_id (ninguna lesión en
+    dos particiones) y mantener balanceada la prevalencia de BCC (~13,1 %)
+    entre particiones — de ahí un fold ESTRATIFICADO Y AGRUPADO
+    (StratifiedGroupKFold), nunca RandomShuffleSplit. La exclusión de TESIS es
+    la primera mitad de esa higiene; este verificador es el recibo de que
+    TESIS es un conjunto sonda limpio y retenido.
 
-    Note: --verificar reads DEFAULT_DATA_DIR and DEFAULT_TESIS_DIR (the repo
-    defaults), NOT the --data-dir/--tesis-dir flags — verification is meant
-    to check the canonical locations produced by a real run.
+    Nota: --verificar lee DEFAULT_DATA_DIR y DEFAULT_TESIS_DIR (los valores por
+    defecto del repo), NO los flags --data-dir/--tesis-dir — la verificación
+    está pensada para comprobar las ubicaciones canónicas que produjo una
+    corrida real.
 
-    Parameters
+    Parámetros
     ----------
     manifest_path : Path
-        Path to tesis_manifest.csv produced by form().
+        Ruta a tesis_manifest.csv producido por form().
 
-    Returns
+    Retorno
     -------
     int
-        0 if every check passes, 1 otherwise.
+        0 si todos los chequeos pasan, 1 en caso contrario.
 
-    Side effects
-    ------------
-    Read-only: hashes the copied files under DEFAULT_TESIS_DIR and parses
-    the GT CSV. Writes nothing.
+    Efectos colaterales
+    -------------------
+    Solo lectura: hashea los archivos copiados bajo DEFAULT_TESIS_DIR y
+    parsea el CSV GT. No escribe nada.
     """
     t0 = time.time()
     cfg = json.loads(CONFIG_PATH.read_text())
@@ -400,8 +421,8 @@ def verificar(manifest_path: Path) -> int:
     ok = True
 
     def check(cond, msg):
-        # Accumulator instead of early return: report EVERY failing check so
-        # a broken manifest shows its full damage in one pass.
+        # Acumulador en lugar de retorno temprano: reporta TODOS los chequeos
+        # fallidos, para que un manifiesto roto muestre todo el daño en una pasada.
         nonlocal ok
         print(("OK  " if cond else "FAIL") + "  " + msg)
         ok = ok and cond
@@ -437,12 +458,12 @@ def verificar(manifest_path: Path) -> int:
 
 
 def main() -> int:
-    """CLI entry point: parse args, dispatch to form() or verificar().
+    """Punto de entrada CLI: parsea args y despacha a form() o verificar().
 
-    Side effects
-    ------------
-    See form()/verificar(); nothing happens beyond argument parsing and
-    delegation here.
+    Efectos colaterales
+    -------------------
+    Ver form()/verificar(); aquí no ocurre nada más allá de parsear argumentos
+    y delegar.
     """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
