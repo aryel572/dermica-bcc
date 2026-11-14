@@ -1,0 +1,22 @@
+# Credenciales — nunca commitear
+.env
+*.pem
+*.key
+keystore.properties
+local.properties
+
+# Datos y artefactos pesados
+DATA_CRUDA/
+TESIS/
+*.zip
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# SO / editores
+.DS_Store
+.idea/
+.vscode/
