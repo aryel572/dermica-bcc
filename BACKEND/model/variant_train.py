@@ -59,11 +59,15 @@ def _build(arch: str):
     x = augment(inputs)
     kw = dict(input_shape=(IMG_SIZE, IMG_SIZE, 3), include_top=False,
               weights="imagenet", pooling="avg")
-    base = {
-        "small": tf.keras.applications.MobileNetV3Small,
-        "large": tf.keras.applications.MobileNetV3Large,
-        "efnetlite0": tf.keras.applications.EfficientNetLite0,
-    }[arch](**kw)
+    # lazy: solo se resuelve la clase elegida (p.ej. EfficientNetLite0 no existe en todos los TF)
+    # EfficientNetLite0 no está en keras.applications de este TF; se usa
+    # EfficientNetB0 (misma escala de red, pesos imagenet, recipe idéntica)
+    base_cls = {
+        "small": "MobileNetV3Small",
+        "large": "MobileNetV3Large",
+        "efnetlite0": "EfficientNetB0",
+    }[arch]
+    base = getattr(tf.keras.applications, base_cls)(**kw)
     x = base(x)
     x = tf.keras.layers.Dropout(0.2)(x)
     outputs = tf.keras.layers.Dense(1, activation="sigmoid")(x)
