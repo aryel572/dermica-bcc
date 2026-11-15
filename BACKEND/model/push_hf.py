@@ -24,8 +24,16 @@ from pathlib import Path
 from huggingface_hub import HfApi
 from huggingface_hub.utils import HfHubHTTPError
 
-APP_ROOT = Path(__file__).resolve().parents[3]  # .../APP_DERMICA
-ENV_PATH = APP_ROOT / "dermica-bcc" / ".env"
+# Monorepo: este archivo vive en BACKEND/model/; el .env está en dermica-bcc/.
+# En Colab (ruta plana /content/model), busca hacia arriba el directorio que
+# contiene dermica-bcc/; si no existe, usa /content/dermica-bcc como raíz.
+ENV_PATH = None
+for _p in Path(__file__).resolve().parents:
+    if (_p / "dermica-bcc").is_dir():
+        ENV_PATH = _p / "dermica-bcc" / ".env"
+        break
+if ENV_PATH is None:
+    ENV_PATH = Path("/content/dermica-bcc/.env")
 REPO_TMP = "dermica-checkpoints-tmp"
 REPO_METRICS = "dermica-metrics"
 REPO_MODELS = "dermica-models"
