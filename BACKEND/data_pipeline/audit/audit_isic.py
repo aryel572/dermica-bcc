@@ -1,17 +1,51 @@
 #!/usr/bin/env python3
-"""S1 audit of the raw ISIC 2019 dataset (understanding phase, CRISP-DM).
+"""Auditoría S1 del dataset crudo ISIC 2019 (fase de entendimiento, CRISP-DM).
 
-Reads DATA_CRUDA in place: zips are never extracted, CSVs are parsed with
-pandas. Writes every artifact to resultados/s1-audit-isic/ (outside the repo).
+Lee DATA_CRUDA in situ: los zips nunca se extraen y los CSV se parsean con
+pandas. Escribe todos los artefactos en resultados/s1-audit-isic/ (fuera del
+repo).
 
-Checks: image counts (GT vs zip entries), GT<->zip 1:1 matching, duplicate
-image ids, class distribution (train/test), lesion_id coverage (train),
-missing values per metadata column, image dimensions/modes on a sample of
-~600 images, SHA-256 of the four CSVs. CRC is verified end to end with
-`unzip -t` per zip.
+QUÉ DEMUESTRA ESTE SCRIPT (y qué hace deliberadamente NO)
+--------------------------------------------------------
+Es la compuerta de "entendimiento de datos" del pipeline de la tesis. Antes de
+formar cualquier split, subconjunto (TESIS) o modelo, necesitamos evidencia
+verificada por máquina de que la versión cruda en disco está completa y es
+autoconsistente:
 
-Usage:
-    uv run python audit_isic.py                 # full audit
+  * Los zips de training/test contienen exactamente los conteos oficiales.
+  * Cada id de imagen del ground truth (GT) existe en el zip y viceversa
+    (cotejo 1:1 estricto, cero duplicados en ambos lados).
+  * Las columnas one-hot de clase suman exactamente una etiqueta por fila
+    (invariante de etiqueta única del formato GT de ISIC 2019).
+  * Los CSV de metadata son parseables y su perfil de valores ausentes es
+    conocido.
+  * Los cuatro CSV y cada artefacto que producimos quedan sellados con
+    SHA-256, de modo que la auditoría es reproducible y resistente a
+    manipulación (`--verificar` los revisa de nuevo).
+  * La integridad CRC de ambos zips se verifica de extremo a extremo con
+    `unzip -t`. (`zipfile.namelist()` NO verifica CRCs: solo lee el directorio
+    central; hace falta una pasada completa aparte.)
+
+NUNCA extrae los archivos, NUNCA escribe en DATA_CRUDA/ (el dataset es de solo
+lectura para este proyecto) y NUNCA toca el split TEST de ISIC 2019 para nada
+que no sea auditarlo. El split test no se usa para entrenar, para formar
+splits ni para subconjuntos en ningún punto del pipeline (ver doc del
+pipeline de la tesis: solo la partición de training, agrupada por
+lesion_id, entra al split 70/20/10; el test oficial queda intacto hasta la
+evaluación final).
+
+SALIDAS (todas bajo --out-dir, por defecto resultados/s1-audit-isic/)
+------------------------------------------------------------------
+  auditoria.json     informe legible por máquina (invariantes + hashes)
+  clases.csv         distribución de clases por split (conteos y porcentajes)
+  lesion_id.csv      imágenes por lesion_id (solo training; ids ausentes omitidos)
+  dimensiones.csv    muestra de anchos/altos/modos de imagen (ver SAMPLE_SEED)
+  figuras/clases.png barras por clase
+  figuras/faltantes.png barras de valores ausentes
+  README-corrida.md  notas legibles de la corrida con los comandos exactos
+
+Uso:
+    uv run python audit_isic.py                 # auditoría completa
     uv run python audit_isic.py --verificar resultados/s1-audit-isic/auditoria.json
 """
 
@@ -29,14 +63,26 @@ from pathlib import Path
 import pandas as pd
 import matplotlib
 
+# El backend headless DEBE seleccionarse antes de importar pyplot; si no,
+# matplotlib intenta cargar un backend gráfico y revienta en máquinas sin
+# display (Colab/CI/servidores). "Agg" solo renderiza a archivos.
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from PIL import Image
 
+# Layout del repo: APP_DERMICA/ es el contenedor; dermica-bcc/ es un repo git
+# dentro de él, y este archivo vive en BACKEND/data_pipeline/audit/. parents[0]
+# es audit/, parents[1] data_pipeline/, parents[2] BACKEND/, parents[3]
+# dermica-bcc/, parents[4] APP_DERMICA/ (la raíz de trabajo que contiene
+# DATA_CRUDA/ y resultados/). Se resuelve desde __file__ para que el script
+# funcione sin importar el directorio de trabajo actual.
 APP_ROOT = Path(__file__).resolve().parents[4]  # .../APP_DERMICA
 DEFAULT_DATA_DIR = APP_ROOT / "DATA_CRUDA"
 DEFAULT_OUT_DIR = APP_ROOT / "resultados" / "s1-audit-isic"
 
+# Nombres canónicos de ISIC 2019 dentro de DATA_CRUDA/. Son los nombres exactos
+# de la versión oficial; la auditoría no asume nada de su contenido más allá de
+# lo que miden las comprobaciones de abajo.
 TRAIN_ZIP = "ISIC_2019_Training_Input.zip"
 TEST_ZIP = "ISIC_2019_Test_Input.zip"
 GT_TRAIN = "ISIC_2019_Training_GroundTruth.csv"
@@ -44,12 +90,52 @@ GT_TEST = "ISIC_2019_Test_GroundTruth.csv"
 META_TRAIN = "ISIC_2019_Training_Metadata.csv"
 META_TEST = "ISIC_2019_Test_Metadata.csv"
 
+# Tamaños oficiales de las tablas ISIC 2019. Codificarlos convierte la
+# auditoría de un "generador de reportes" en una compuerta real: cualquier
+# imagen faltante o sobrante revienta la corrida en vez de propagarse en
+# silencio hacia los splits y subconjuntos.
 EXPECTED = {"training": 25331, "test": 8238}
+
+# Orden one-hot exactamente como lo entregan los CSV GroundTruth de ISIC 2019:
+# MEL (melanoma), NV (nevus), BCC (carcinoma basocelular), AK (queratosis
+# actínica), BKL (queratosis benigna similar), DF (dermatofibroma), VASC
+# (lesiones vasculares), SCC (carcinoma espinocelular), UNK (desconocido).
+# Nota: SCC y UNK aparecen en el GT aunque sean raros/ausentes por split; la
+# lista de columnas de clase se interseca con lo que realmente esté presente
+# (ver load_gt).
 CLASS_COLS = ["MEL", "NV", "BCC", "AK", "BKL", "DF", "VASC", "SCC", "UNK"]
+
+# Semilla de la muestra de dimensiones/modos (~600 imágenes). 42 es la semilla
+# fija de todo el proyecto (el mismo valor que se usa para la formación de
+# subconjuntos TESIS y los splits posteriores), de modo que cada elección
+# estocástica del pipeline sea reproducible con la misma constante y auditable
+# en la tesis. Cambiarla alteraría en silencio la muestra, así que la propia
+# semilla forma parte del contrato del artefacto: dimensiones.csv siempre
+# describe las mismas imágenes para un mismo dataset.
 SAMPLE_SEED = 42
 
 
 def sha256_file(path: Path) -> str:
+    """Devuelve el digest SHA-256 hexadecimal de un archivo, en chunks de 1 MiB.
+
+    Parámetros
+    ----------
+    path : Path
+        Archivo a hashear. Se lee completo una vez; no se modifica nada.
+
+    Retorno
+    -------
+    str
+        Digest hex en minúsculas (64 chars).
+
+    Efectos colaterales
+    -------------------
+    Ninguno (solo lectura). La lectura en chunks mantiene la memoria en
+    O(1 MiB) incluso para archivos grandes, lo que importa si alguna vez se
+    ejecuta contra los propios zips.
+    1 << 20 = 1 MiB: lo bastante grande para amortizar llamadas al SO y lo
+    bastante pequeño para seguir en caché.
+    """
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -58,7 +144,34 @@ def sha256_file(path: Path) -> str:
 
 
 def unzip_test(zip_path: Path) -> tuple[bool, str, float]:
-    """Full CRC check via `unzip -t`. Returns (ok, tail_of_output, seconds)."""
+    """Comprueba CRC completo vía `unzip -t`. Devuelve (ok, cola_de_salida, segundos).
+
+    Por qué el `unzip` del sistema y no el zipfile de la stdlib: listar o
+    extraer con el zipfile de Python verifica los CRCs solo cuando los bytes
+    se leen de verdad (al extraer o en `ZipFile.read`), y nunca para
+    operaciones que solo tocan metadatos. `unzip -t` es la comprobación de
+    integridad canónica de extremo a extremo para estos archivos de varios
+    GB y no requiere disco para extraer. Esta función delega en ella y mide
+    el tiempo de pared.
+
+    Parámetros
+    ----------
+    zip_path : Path
+        Archivo a probar. No se modifica y no se escribe nada en disco.
+
+    Retorno
+    -------
+    tuple[bool, str, float]
+        (True si el código de salida es 0, última línea no vacía de la
+        salida para el log de auditoría, segundos transcurridos). En caso de
+        fallo la tupla se devuelve igual para que el llamador pueda decidir
+        cómo reportarlo; el llamador hace assert sobre el flag.
+
+    Efectos colaterales
+    -------------------
+    Lanza un subproceso (`unzip -t`). No se crean ni borran archivos; el
+    archivo se abre en solo lectura.
+    """
     start = time.perf_counter()
     proc = subprocess.run(["unzip", "-t", str(zip_path)], capture_output=True, text=True)
     elapsed = time.perf_counter() - start
@@ -68,18 +181,86 @@ def unzip_test(zip_path: Path) -> tuple[bool, str, float]:
 
 
 def zip_entries(zip_path: Path) -> tuple[list[str], int]:
+    """Lista las entradas de imagen y el total de entradas de un zip sin extraer.
+
+    Parámetros
+    ----------
+    zip_path : Path
+        Archivo a inspeccionar. Solo lectura.
+
+    Retorno
+    -------
+    tuple[list[str], int]
+        (stems de todas las entradas cuyo nombre termina en .jpg, sin
+        importar mayúsculas/minúsculas, número total de entradas del archivo
+        incluyendo no-jpg/directorios). El stem (nombre sin extensión) es lo
+        que casa con la columna `image` del GT en ISIC 2019.
+
+    Efectos colaterales
+    -------------------
+    Lee solo el directorio central; no hay verificación CRC aquí (eso es
+    trabajo de unzip_test) y no se descomprime ningún byte de imagen.
+    """
     with zipfile.ZipFile(zip_path) as zf:
         names = zf.namelist()
     return [Path(n).stem for n in names if n.lower().endswith(".jpg")], len(names)
 
 
 def load_gt(csv_path: Path) -> tuple[pd.DataFrame, list[str]]:
+    """Parsea un CSV GroundTruth y resuelve qué columnas de clase están presentes.
+
+    Parámetros
+    ----------
+    csv_path : Path
+        Ruta a ISIC_2019_*_GroundTruth.csv.
+
+    Retorno
+    -------
+    tuple[pd.DataFrame, list[str]]
+        (dataframe GT completo, CLASS_COLS intersecadas con las columnas
+        realmente presentes, preservando el orden de CLASS_COLS). La
+        intersección tolera versiones del GT que omiten clases (p. ej. un
+        split sin filas SCC puede omitir la columna) sin fallar; el invariante
+        que importa — una etiqueta hot por fila — lo hace cumplir
+        class_distribution().
+
+    Efectos colaterales
+    -------------------
+    Ninguno (parseo del CSV en solo lectura).
+    """
     gt = pd.read_csv(csv_path)
     class_cols = [c for c in CLASS_COLS if c in gt.columns]
     return gt, class_cols
 
 
 def class_distribution(gt: pd.DataFrame, class_cols: list[str]) -> pd.DataFrame:
+    """Calcula conteos y porcentajes por clase desde el GT one-hot.
+
+    Aquí es también donde se hace cumplir el invariante de etiqueta única:
+    las filas del GT de ISIC 2019 llevan exactamente una columna de clase en
+    1 y ceros en el resto. Si un CSV viniera multi-etiqueta o corrupto, las
+    sumas de columnas no igualarían el número de filas y el assert de abajo
+    revienta de inmediato en lugar de producir en silencio una distribución
+    equivocada.
+
+    Parámetros
+    ----------
+    gt : pd.DataFrame
+        Dataframe de verdad-terreno; debe contener todas las `class_cols` y
+        la columna de id `image` (no se usa aquí, pero la requieren los
+        llamadores para el cotejo con el zip).
+    class_cols : list[str]
+        Columnas one-hot a agregar, típicamente la salida de load_gt.
+
+    Retorno
+    -------
+    pd.DataFrame
+        Columnas `clase`, `conteo`, `porcentaje` (porcentaje de filas del GT).
+
+    Efectos colaterales
+    -------------------
+    Ninguno más allá de construir el pequeño dataframe de resultados.
+    """
     counts = gt[class_cols].sum().astype(int)
     total = int(counts.sum())
     assert total == len(gt), (
@@ -103,6 +284,58 @@ def audit_split(
     out_dir: Path,
     crc: tuple[bool, str, float],
 ) -> dict:
+    """Ejecuta la auditoría completa de un split y devuelve sus resultados.
+
+    Chequeos, en orden:
+      1. Lista de entradas del zip vs filas del GT (conteos oficiales exactos,
+         EXPECTED).
+      2. ids de imagen duplicados en el GT y en el zip (deben ser 0).
+      3. Cotejo estricto 1:1 entre ids del GT y stems jpg del zip, listando
+         hasta unos pocos ids ofensivos en el mensaje del assert para
+         depurar.
+      4. Distribución por clase (delegada a class_distribution).
+      5. Parseo del CSV de metadata + conteos de ausencias por columna.
+
+    Parámetros
+    ----------
+    name : str
+        Nombre del split, exactamente "training" u "test"; indexa EXPECTED y
+        se refleja en el informe.
+    data_dir : Path
+        Raíz de DATA_CRUDA (se usa para reportar rutas; las rutas de
+        zip/gt/meta se pasan explícitamente como rutas absolutas).
+    zip_path : Path
+        El *_Input.zip de ISIC 2019 de este split.
+    gt_path : Path
+        El *_GroundTruth.csv correspondiente.
+    meta_path : Path
+        El *_Metadata.csv correspondiente.
+    out_dir : Path
+        Sin uso dentro de esta función (se conserva en la firma por simetría
+        con el resto del pipeline y para futuros artefactos); aquí no se
+        escribe ningún archivo.
+    crc : tuple[bool, str, float]
+        Resultado precalculado de unzip_test para este zip (se ejecuta una
+        vez por split en main para no duplicar el trabajo y para fallar
+        antes de la auditoría costosa).
+
+    Retorno
+    -------
+    dict
+        Informe por split legible por máquina: tamaños, CRCs, duplicados,
+        conteos de ausentes, más los dataframes embebidos `dist`, `meta`,
+        `gt` (los usa main para figuras/JSON; se eliminan antes de
+        serializar). Los campos `gt_zip_1a1`, `gt_sin_zip` y `zip_sin_gt`
+        codifican el estado post-assert: llegar al return implica 1:1 con
+        cero faltantes.
+
+    Efectos colaterales
+    -------------------
+    Lee el zip (solo el directorio central) y dos CSV. Los asserts abortan
+    toda la corrida ante cualquier violación de invariante; es intencional:
+    un invariante fallido significa que el dataset en disco no es lo que la
+    tesis asume.
+    """
     zip_start = time.perf_counter()
     ids_zip, total_entries = zip_entries(zip_path)
     zip_secs = time.perf_counter() - zip_start
@@ -117,6 +350,10 @@ def audit_split(
     faltantes = {c: int(meta[c].isna().sum()) for c in meta.columns}
     meta_rows = len(meta)
 
+    # Compuertas duras. Son las propiedades en las que el resto del pipeline
+    # (agrupar por lesion_id, splits estratificados, subconjuntos TESIS) se
+    # apoya en silencio; fallar aquí sale más barato que depurar un modelo
+    # sesgado después.
     assert len(gt) == EXPECTED[name], f"{name}: GT rows {len(gt)} != {EXPECTED[name]}"
     assert len(ids_zip) == EXPECTED[name], f"{name}: zip jpgs {len(ids_zip)} != {EXPECTED[name]}"
     assert dup_gt == 0, f"{name}: {dup_gt} duplicate image ids in GT"
@@ -137,6 +374,9 @@ def audit_split(
         "gt_filas": len(gt),
         "gt_duplicados": dup_gt,
         "zip_duplicados": dup_zip,
+        # Tras los asserts de arriba estos valores son invariantemente True/0;
+        # se serializan para que el JSON registre explícitamente la propiedad
+        # comprobada en lugar de insinuarla con la ausencia de errores.
         "gt_zip_1a1": True,
         "gt_sin_zip": 0,
         "zip_sin_gt": 0,
@@ -149,6 +389,42 @@ def audit_split(
 
 
 def sample_dimensions(splits: dict, data_dir: Path, out_dir: Path, sample_per_split: int) -> pd.DataFrame:
+    """Muestrea imágenes por split y registra ancho/alto/modo.
+
+    Determinístico: el RNG se seedea con SAMPLE_SEED y las entradas se ordenan
+    antes de muestrear, de modo que se miden las MISMAS imágenes en cada
+    corrida (rng.sample sobre la misma lista ordenada con la misma semilla es
+    estable entre máquinas y versiones de Python para random.Random).
+    Ordenar es lo que vuelve la muestra independiente del orden interno del
+    zip.
+
+    Parámetros
+    ----------
+    splits : dict
+        Salida de las llamadas a `audit_split` de main por split (necesita el
+        nombre de archivo "zip" de cada split).
+    data_dir : Path
+        Raíz de DATA_CRUDA.
+    out_dir : Path
+        Destino de dimensiones.csv.
+    sample_per_split : int
+        Máximo de imágenes a abrir por split (por defecto 300 en main →
+        ~600 en total). Si un split tiene menos jpg que lo pedido, se
+        muestrean todos.
+
+    Retorno
+    -------
+    pd.DataFrame
+        Columnas image, split, width, height, mode — una fila por imagen
+        muestreada. También se escribe en out_dir/dimensiones.csv
+        (index=False).
+
+    Efectos colaterales
+    -------------------
+    Abre y decodifica (cabeceras + píxeles) las imágenes muestreadas desde
+    dentro de los zips vía zf.open; escribe dimensiones.csv. NO extrae los
+    archivos.
+    """
     rng = random.Random(SAMPLE_SEED)
     rows = []
     for name, info in splits.items():
@@ -174,6 +450,19 @@ def sample_dimensions(splits: dict, data_dir: Path, out_dir: Path, sample_per_sp
 
 
 def main() -> int:
+    """Ejecuta la auditoría completa y escribe todos los artefactos; devuelve el código de salida.
+
+    El código 0 significa que todos los invariantes se cumplieron y los
+    artefactos se escribieron. Cualquier assert fallido o excepción sale con
+    código distinto de cero (traceback), que es el modo de fallo previsto para
+    CI/corridas manuales: la auditoría es todo-o-nada.
+
+    Efectos colaterales
+    -------------------
+    Crea --out-dir y --out-dir/figuras/ si no existen; escribe
+    auditoria.json, clases.csv, lesion_id.csv, dimensiones.csv,
+    figuras/*.png y README-corrida.md; imprime el progreso por stdout.
+    """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
@@ -203,6 +492,8 @@ def main() -> int:
     print(f"      -> {'OK' if crc_test[0] else 'FAIL'} en {crc_test[2]:.1f}s | {crc_test[1]}")
     timings["crc_train_seg"] = round(crc_train[2], 2)
     timings["crc_test_seg"] = round(crc_test[2], 2)
+    # El CRC es la comprobación más costosa; si falla nos detenemos aquí en
+    # vez de quemar tiempo con el resto de la auditoría sobre un archivo corrupto.
     assert crc_train[0] and crc_test[0], "CRC failed (unzip -t); see output above"
 
     print("[3/6] Auditando GT/metadata/zips...")
@@ -211,6 +502,13 @@ def main() -> int:
         "test": audit_split("test", data_dir, data_dir / TEST_ZIP, data_dir / GT_TEST, data_dir / META_TEST, out_dir, crc_test),
     }
 
+    # lesion_id solo existe en la metadata de TRAINING (la metadata de test de
+    # ISIC 2019 no tiene lesion_id — las lesiones allí son desconocidas). Este
+    # bloque calcula las estadísticas a nivel de lesión que justifican agrupar
+    # por lesion_id en lugar de por image_id en el split 70/20/10: las
+    # imágenes de una misma lesión son casi duplicados, y dejar que caigan en
+    # particiones distintas filtraría contenido visualmente idéntico entre
+    # train/validación.
     print("[4/6] lesion_id (solo training)...")
     meta_tr = splits["training"]["meta"]
     lesion = meta_tr["lesion_id"].dropna()
@@ -253,6 +551,9 @@ def main() -> int:
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=False)
     for ax, (name, s) in zip(axes, splits.items()):
+        # Terracota para training, azul para test: misma semántica de
+        # paleta que el resto de figuras del proyecto (train/test nunca
+        # deben confundirse visualmente).
         ax.bar(s["dist"]["clase"], s["dist"]["conteo"], color="#b34724" if name == "training" else "#2c6fbb")
         ax.set_title(f"ISIC 2019 {name} (n={len(s['gt'])})")
         ax.set_xlabel("Clase")
@@ -269,6 +570,8 @@ def main() -> int:
         ax.barh(list(mf.keys()), pct, color="#3a7d44")
         ax.set_title(f"Faltantes en metadata ({name})")
         ax.set_xlabel("% ausente")
+        # Las etiquetas barh se leen de arriba hacia abajo; invertir pone la
+        # primera columna (alfabético por orden del CSV) arriba, como el CSV para humanos.
         ax.invert_yaxis()
     fig.tight_layout()
     fig.savefig(out_dir / "figuras" / "faltantes.png", dpi=150)
@@ -287,6 +590,8 @@ def main() -> int:
         },
         "tiempos_seg": timings,
         "hashes_sha256_csv": hashes,
+        # Se eliminan los dataframes embebidos antes de serializar: dist/meta/gt
+        # viven en memoria solo para figuras y resúmenes, no en el JSON.
         "zips": {
             name: {k: v for k, v in s.items() if k not in ("dist", "meta", "gt")} for name, s in splits.items()
         },
@@ -295,6 +600,9 @@ def main() -> int:
         "faltantes_metadata": {name: s["meta_faltantes"] for name, s in splits.items()},
         "lesion_id_training": lesion_summary,
         "dimensiones_muestra": dims_summary,
+        # Los invariantes se guardan explícitamente, no se recalculan al leer:
+        # el JSON es el recibo firmado de que el dataset cumplió las
+        # precondiciones de la tesis en el momento de generarlo.
         "invariantes": {
             "train_imagenes": splits["training"]["gt_filas"],
             "test_imagenes": splits["test"]["gt_filas"],
@@ -309,10 +617,14 @@ def main() -> int:
         out_dir / f
         for f in ["clases.csv", "lesion_id.csv", "dimensiones.csv", "figuras/clases.png", "figuras/faltantes.png"]
     ]
+    # Se hashea cada artefacto que prometemos, para que --verificar pueda
+    # detectar cualquier deriva o edición manual posterior.
     audit["artefactos"] = {p.relative_to(out_dir).as_posix(): sha256_file(p) for p in artifact_paths}
     audit_path.write_text(json.dumps(audit, indent=2, ensure_ascii=False) + "\n")
 
-    # self-check: re-read what we just wrote
+    # autocomprobación: se relee lo que acabamos de escribir. Cable de
+    # integridad barato: si el serializador corrompió algo o un assert fue
+    # eliminado (python -O), esto falla antes de escribir el README.
     check = json.loads(audit_path.read_text())
     assert check["invariantes"]["train_imagenes"] == EXPECTED["training"]
     assert check["invariantes"]["test_imagenes"] == EXPECTED["test"]
@@ -325,12 +637,43 @@ def main() -> int:
 
 
 def verificar(audit_path: Path) -> int:
+    """Reverifica un auditoria.json previamente escrito contra el disco.
+
+    No vuelve a derivar nada del dataset excepto los cuatro CSV de entrada:
+    comprueba (a) que todas las claves requeridas estén presentes, (b) que los
+    invariantes serializados coincidan con los conteos oficiales, (c) que los
+    CSV de entrada sigan hasheando a los digests registrados, (d) que cada
+    artefacto listado exista y hashee a su digest registrado. Este es el
+    recibo de reproducibilidad de la auditoría; debe pasar en la máquina que
+    generó el JSON (y no depende de reejecutar los CRC de los zips).
+
+    Parámetros
+    ----------
+    audit_path : Path
+        Ruta a auditoria.json. Su directorio padre se toma como out_dir y el
+        `data_dir` grabado dentro del JSON como ubicación de los CSV de
+        entrada (con DEFAULT_DATA_DIR de respaldo si falta).
+
+    Retorno
+    -------
+    int
+        0 si todos los chequeos pasan, 1 en caso contrario. Los chequeos
+        individuales se imprimen como líneas PASS/FAIL; todos se ejecutan aun
+        tras un fallo (sin salida temprana) para que el resumen muestre todo
+        el daño.
+
+    Efectos colaterales
+    -------------------
+    Solo lectura: hashea los CSV y los artefactos listados en el JSON.
+    """
     audit_path = audit_path.resolve()
     out_dir = audit_path.parent
     data_dir = Path(json.loads(audit_path.read_text()).get("data_dir", str(DEFAULT_DATA_DIR)))
     ok = True
 
     def check(label: str, cond: bool) -> None:
+        # Acumulador nonlocal: colecta cada veredicto, imprime uno por uno y
+        # nunca corta en el primero — el resumen debe listar TODOS los fallos.
         nonlocal ok
         ok = ok and cond
         print(f"  [{'PASS' if cond else 'FAIL'}] {label}")
@@ -349,6 +692,9 @@ def verificar(audit_path: Path) -> int:
     check("GT <-> zip 1:1", inv.get("gt_zip_1a1") is True)
     check("CRC zips OK", inv.get("crc_ok") is True)
 
+    # Se rehashean entradas y artefactos; ambos chequeos comparan contra los
+    # digests registrados al generar. Un CSV o artefacto editado tras la
+    # auditoría falla aquí aunque todos los conteos parezcan estar bien.
     for name, digest in audit.get("hashes_sha256_csv", {}).items():
         p = data_dir / name
         check(f"SHA-256 {name}", p.exists() and sha256_file(p) == digest)
@@ -362,6 +708,25 @@ def verificar(audit_path: Path) -> int:
 
 
 def write_readme(out_dir: Path, audit: dict) -> None:
+    """Escribe README-corrida.md — un recibo legible de esta corrida de auditoría.
+
+    El README registra los comandos exactos, versiones del entorno, tiempos y
+    hashes de entrada para que la auditoría pueda reproducirse o citarse desde
+    la tesis sin abrir el JSON. El contenido sale del dict de auditoría (nunca
+    se recalcula), así que el README siempre coincide con auditoria.json.
+
+    Parámetros
+    ----------
+    out_dir : Path
+        Directorio de destino (se crea README-corrida.md ahí).
+    audit : dict
+        El informe de auditoría en memoria (el mismo objeto serializado a
+        auditoria.json); lee hashes, tiempos, entorno y out_dir.
+
+    Efectos colaterales
+    -------------------
+    Escribe out_dir/README-corrida.md.
+    """
     h = audit["hashes_sha256_csv"]
     t = audit["tiempos_seg"]
     env = audit["entorno"]
