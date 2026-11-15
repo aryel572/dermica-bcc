@@ -1,0 +1,26 @@
+{
+  "seed": 42,
+  "tesis": {
+    "subsets": 30,
+    "images_per_subset": 15,
+    "min_bcc_per_subset": 5,
+    "repeat_across_subsets": true
+  },
+  "splits": {
+    "train": 0.7,
+    "val": 0.2,
+    "test": 0.1,
+    "group_by": "lesion_id",
+    "stratified": true
+  },
+  "isic2019": {
+    "train_images": 25331,
+    "test_images": 8238,
+    "train_bcc": 3323,
+    "train_bcc_pct": 13.12
+  },
+  "metricas": {
+    "primaria": "AUPRC",
+    "delta_upgrade": 0.02
+  }
+}
