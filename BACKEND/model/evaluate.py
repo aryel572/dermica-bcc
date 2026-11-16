@@ -83,7 +83,8 @@ def main() -> int:
     ap.add_argument("--data", type=Path, default=None,
                     help="directorio test-224 con subcarpetas BCC/NO_BCC (obligatorio para evaluar)")
     ap.add_argument("--split-csv", type=Path, default=None, help="CSV del split usado (informativo)")
-    ap.add_argument("--model", type=Path, default=None, help="ruta al .keras")
+    ap.add_argument("--model", type=Path, default=None, help="ruta al .keras (float)")
+    ap.add_argument("--tflite", type=Path, default=None, help="ruta a un .tflite (modo int8); si se indica, se ignora --model")
     ap.add_argument("--tag", default="test", help="etiqueta del split evaluado (test|val)")
     ap.add_argument("--reports", type=Path, default=None, help="ruta del JSON de salida")
     ap.add_argument("--verificar", type=Path, default=None, help="JSON ya generado a verificar")
@@ -92,8 +93,8 @@ def main() -> int:
     if args.verificar is not None:
         return verificar(args.verificar)
 
-    if args.model is None:
-        print("ERROR: --model es obligatorio para evaluar")
+    if args.model is None and args.tflite is None:
+        print("ERROR: --model (o --tflite) es obligatorio para evaluar")
         return 1
 
     if args.data is None:
@@ -104,11 +105,38 @@ def main() -> int:
         print(f"ERROR: {args.data} no contiene imágenes")
         return 1
 
-    ds = tf.data.Dataset.from_tensor_slices((paths, y_true))
-    ds = ds.map(_parse, num_parallel_calls=tf.data.AUTOTUNE).batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
+    if args.tflite is not None:
+        ys = []
+        interpreter = tf.lite.Interpreter(model_path=str(args.tflite))
+        interpreter.allocate_tensors()
+        in_det = interpreter.get_input_details()[0]
+        out_det = interpreter.get_output_details()[0]
+        in_scale, in_zp = in_det.get("quantization", (0.0, 0))
+        out_scale, out_zp = out_det.get("quantization", (0.0, 0))
+        for p in paths:
+            img = tf.io.read_file(p)
+            img = tf.io.decode_jpeg(img, channels=3)
+            arr = tf.cast(img, tf.float32).numpy()[None, ...]
+            if in_det["dtype"] == np.int8 and in_scale not in (None, 0.0, 1.0):
+                arr = np.round(arr / in_scale + in_zp).astype(np.int8)
+            interpreter.set_tensor(in_det["index"], arr)
+            interpreter.invoke()
+            raw = interpreter.get_tensor(out_det["index"]).reshape(-1).astype(np.float32)
+            if out_det["dtype"] == np.int8 and out_scale not in (None, 0.0, 1.0):
+                raw = (raw - out_zp) * out_scale  # int8 cuantizado → desnormaliza
+            ys.append(float(raw[0]))
+        y_score = np.asarray(ys, dtype=np.float32)
+        modelo_desc = "MobileNetV3-Small int8 (tflite), 1.0.0"
+        preproc = "decode_jpeg→float32[0,255]→int8(q)"
+    else:
+        ds = tf.data.Dataset.from_tensor_slices((paths, y_true))
+        ds = ds.map(_parse, num_parallel_calls=tf.data.AUTOTUNE).batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
+        model = cargar_modelos(args.model)
+        y_score = model.predict(ds, verbose=0).reshape(-1)
+        modelo_desc = "MobileNetV3-Small (fine-tuned), 1.0.0"
+        preproc = "decode_jpeg→float32[0,255]"
 
-    model = cargar_modelos(args.model)
-    y_score = model.predict(ds, verbose=0).reshape(-1).tolist()
+    y_score = np.asarray(y_score).reshape(-1).tolist()
 
     rep = metrics.reporte(y_true.tolist(), y_score)
     n_bcc = int(np.sum(y_true == 1))
@@ -124,8 +152,8 @@ def main() -> int:
         "f2": round(rep["f2"], 4),
         "precision": round(rep["precision"], 4),
         "tp": int(rep["tp"]), "fp": int(rep["fp"]), "tn": int(rep["tn"]), "fn": int(rep["fn"]),
-        "preprocess": "decode_jpeg→float32[0,255]",
-        "modelo": "MobileNetV3-Small (fine-tuned), 1.0.0",
+        "preprocess": preproc,
+        "modelo": modelo_desc,
         "_generado_utc": datetime.now(timezone.utc).isoformat(),
     }
     if args.reports:
