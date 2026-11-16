@@ -127,7 +127,7 @@ def main() -> int:
             img = tf.io.read_file(p)
             img = tf.io.decode_jpeg(img, channels=3)
             arr = tf.cast(img, tf.float32).numpy()[None, ...]
-            if in_det["dtype"] == np.int8 and in_scale not in (None, 0.0, 1.0):
+            if in_det["dtype"] == np.int8:
                 arr = np.round(arr / in_scale + in_zp).astype(np.int8)
             interpreter.set_tensor(in_det["index"], arr)
             interpreter.invoke()

@@ -162,7 +162,7 @@ def report_latency(tflite_path: Path, val_dir: Path) -> dict:
     for p in chosen:
         img = tf.keras.preprocessing.image.load_img(str(p), target_size=(IMG_SIZE, IMG_SIZE))
         arr = np.asarray(img, dtype=np.float32)[np.newaxis, ...]
-        if in_det["dtype"] == np.int8 and in_scale not in (None, 0.0, 1.0):
+        if in_det["dtype"] == np.int8:
             arr = np.round(arr / in_scale + in_zp).astype(np.int8)
         t0 = time.perf_counter()
         interpreter.set_tensor(in_det["index"], arr)
