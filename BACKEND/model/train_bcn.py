@@ -39,10 +39,12 @@ from dataset_tf import cargar_datasets, IMG_SIZE, BATCH_SIZE, SEED
 import metrics
 import push_hf
 
-VERSION = "1.0.0"   # línea de versión del modelo
-BASE_DIR = os.environ.get("PREPARED_DIR", "/content/prepared/224")  # en Colab
-OUT_DIR = Path(os.environ.get("OUT_DIR", "/content/out"))
-EPOCHS = 40
+VERSION = "1.0.0"   # línea de versión del modelo (tag completo `1.0.0`; en desarrollo `1.0.0-epN`)
+BASE_DIR = os.environ.get("PREPARED_DIR", "/content/prepared/224")  # path al dataset en el VM de Colab (local vía env var)
+OUT_DIR = Path(os.environ.get("OUT_DIR", "/content/out"))  # OUT_DIR escribible en Colab; local se ajusta con env var
+EPOCHS = 40                     # tope de épocas: EarlyStopping puede cortar antes (patience=10 sobre val_auprc)
+# class_weight 0:1.0 / 1:6.87 → compensa el desbalance (BCC ≈ 1/7,83 del train, ratio inversa ~6.87);
+# el modelo pagaría el doble de gradiente por cada BCC, priorizando recall BCC
 CLASS_WEIGHT = {0: 1.0, 1: 6.87}
 
 # Semillas de todos los RNG antes de cualquier azar (reproducibilidad)
@@ -74,7 +76,14 @@ def build_model():
 
 
 def lr_schedule(epoch):
-    """Warmup lineal 3 épocas → cosine decay hasta 1e-5 al final."""
+    """Warmup lineal 3 épocas → cosine decay hasta 1e-5 al final.
+
+    Params: epoch — época 0-based.
+    Returns: float con la tasa de aprendizaje de esa época.
+    Por qué warmup+cosine: régimen estándar para fine-tuning con pesos imagenet;
+    evita destruir los pesos pre-entrenados en las primeras épocas y decae suave
+    hacia el mínimo para convergencia fina sobre el desbalance BCC.
+    """
     peak, min_lr, warm = 1e-3, 1e-5, 3
     if epoch < warm:
         return peak * (epoch + 1) / warm
@@ -83,7 +92,17 @@ def lr_schedule(epoch):
 
 
 class EvalMetrics(tf.keras.callbacks.Callback):
-    """Evalúa val al cerrar cada época; inyecta val_* en logs y persiste CSV+JSON."""
+    """Evalúa val al cerrar cada época; inyecta val_* en logs y persiste CSV.
+
+    Params:
+        val_ds   — dataset de validación (sin augment, sin shuffle).
+        out_csv  — ruta para log-epoch.csv (append por época).
+    Side effects: escribe log-epoch.csv y mutá logs del entrenamiento con
+    val_auprc/val_recall/val_specificity/val_balanced_acc/val_f2 para que
+    EarlyStopping pueda monitorear val_auprc directamente.
+    Por qué no keras.metrics: AUPRC no se puede agregar por batch; se computa
+    sobre todas las predicciones de val al cerrar la época.
+    """
 
     def __init__(self, val_ds, out_csv):
         super().__init__()
@@ -117,7 +136,14 @@ class EvalMetrics(tf.keras.callbacks.Callback):
 
 
 class PushCheckpoint(tf.keras.callbacks.Callback):
-    """Push del checkpoint cada 5 épocas (modelo completo + pesos + métricas)."""
+    """Push del checkpoint cada 5 épocas (modelo completo + pesos + métricas).
+
+    Params: out_dir — directorio donde se escribe `1.0.0-epN.keras`,
+    `.weights.h5`, `.json` (métricas de la época) y se sube a los repos HF.
+    Side effects: escribe archivos en OUT_DIR; sube a dermica-checkpoints-tmp
+    (tag `1.0.0-epN`) y dermica-metrics (JSON `1.0.0-epN.json`); borra en ambos
+    los tags anteriores al actual (reglas E6). Solo actúa cada 5 épocas.
+    """
 
     def __init__(self, out_dir):
         super().__init__()
@@ -148,7 +174,15 @@ class PushCheckpoint(tf.keras.callbacks.Callback):
 
 
 def restore_if_possible(model):
-    """Descarga el último 1.0.0-epN y restaura pesos. Devuelve época inicial."""
+    """Descarga el último 1.0.0-epN y restaura pesos. Devuelve época inicial.
+
+    Params: model — modelo compilado ya instanciado.
+    Returns: int, época inicial para model.fit (0 si no hay resume posible).
+    Side effects: lee/descarga del repo tmp en HF; mutá pesos del modelo en sitio.
+    Por qué fallo silencioso a 0: perder un resume no debe abortar el
+    entrenamiento, pero el corte de cuota entre sesiones sí puede pausar; HF
+    queda como estado persistente entre VMs (resume honesto).
+    """
     try:
         latest = push_hf.latest_tag(VERSION)
     except Exception as e:
@@ -217,7 +251,7 @@ def main() -> int:
         callbacks=callbacks,
         verbose=1,
     )
-    # Versión completa 1.0.0 → dermica-models; métricas finales en dermica-metrics
+    # Versión completa 1.0.0 → dermica-models; métricas finales permanentes en dermica-metrics
     final_metrics = metrics.reporte(*eval_val(model, val_ds))
     push_hf.upload_complete(model, final_metrics, VERSION, OUT_DIR)
     print("entrenamiento completado")
@@ -225,7 +259,13 @@ def main() -> int:
 
 
 def eval_val(model, val_ds):
-    """Predicciones sobre val: devuelve (y_true, y_score)."""
+    """Predicciones sobre val: devuelve (y_true, y_score).
+
+    Params: model — modelo entrenado; val_ds — dataset de validación.
+    Returns: tuple (y_true, y_score) con listas binarias/[0..1].
+    Por qué separado: la versión completa final no requiere restaurar best weights,
+    usa el modelo ya post-EarlyStopping (que restauró el mejor epoch solo).
+    """
     y_true, y_score = [], []
     for x, y in val_ds:
         y_score.extend(model.predict(x, verbose=0).reshape(-1).tolist())
