@@ -20,10 +20,10 @@ import numpy as np
 def auprc(y_true, y_score):
     """AUPRC (precisión promedio) vía scikit-learn.
 
-    Params:
+    Parámetros:
         y_true  — etiquetas binarias 0/1 (iterable de len n).
         y_score — puntuaciones/probabilidad de la clase positiva BCC en [0, 1].
-    Returns:
+    Retorna:
         float con el average_precision (área bajo la curva precisión-recall).
     Por qué sklearn: implementa AP nativamente con mismos def que en S1/S2.
     """
@@ -34,11 +34,11 @@ def auprc(y_true, y_score):
 def confusion_at(y_true, y_score, threshold=0.5):
     """Divide las predicciones en TP/FP/TN/FN según el umbral.
 
-    Params:
+    Parámetros:
         y_true    — etiquetas binarias 0/1.
         y_score   — puntuaciones/probabilidad en [0, 1].
         threshold — corte de decisión (por defecto 0.5, neutral para sigmoide).
-    Returns:
+    Retorna:
         tuple (tp, fp, tn, fn) con conteos enteros.
     Por qué umbral 0.5: la sigmoide del modelo y la F2 no penalizan el umbral;
     si se requiere calibración clínica, ajustar acá (no en el cálculo).
@@ -55,11 +55,11 @@ def confusion_at(y_true, y_score, threshold=0.5):
 def reporte(y_true, y_score, threshold=0.5):
     """Devuelve el dict completo de métricas sobre el umbral dado.
 
-    Params:
+    Parámetros:
         y_true    — etiquetas binarias 0/1.
         y_score   — puntuaciones/probabilidad en [0, 1].
         threshold — umbral de decisión (por defecto 0.5).
-    Returns:
+    Retorna:
         dict con auprc, recall/sensibilidad, especificidad, balanced_acc, f2,
         precision, y los conteos crudos tp/fp/tn/fn.
     Por qué no fallar con divisiones por cero: se devuelve 0.0 y se sigue

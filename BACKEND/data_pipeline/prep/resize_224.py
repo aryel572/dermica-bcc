@@ -37,8 +37,8 @@ JPEG_Q = 85     # q85: suficiente para 224 px, ~35-50 KB por imagen
 def load_splits(splits_dir: Path) -> pd.DataFrame:
     """Concatena train y val (el test de ISIC y TESIS no entran en S3).
 
-    Params: splits_dir — directorio con train.csv/val.csv del step S2.
-    Returns: DataFrame con image, split, label_full, label_bcc, lesion_id.
+    Parámetros: splits_dir — directorio con train.csv/val.csv del step S2.
+    Retorna: DataFrame con image, split, label_full, label_bcc, lesion_id.
     """
     dfs = []
     for name in ("train", "val"):
@@ -49,8 +49,8 @@ def load_splits(splits_dir: Path) -> pd.DataFrame:
 def main() -> int:
     """Ejecuta el re-escalado binario de train+val (usada como paso previo de S3).
 
-    Returns: 0 si no hubo imágenes saltadas, 1 si alguna falta en el zip.
-    Side effects: escribe prepared/224/{train,val}/<BCC|NO_BCC>/<image>.jpg;
+    Retorna: 0 si no hubo imágenes saltadas, 1 si alguna falta en el zip.
+    Efectos colaterales: escribe prepared/224/{train,val}/<BCC|NO_BCC>/<image>.jpg;
     con --verificar audita conteos y tamaño sin escribir.
     """
     ap = argparse.ArgumentParser(description=__doc__)
@@ -111,8 +111,8 @@ def main() -> int:
 def verificar(out_dir: Path, splits_dir: Path) -> int:
     """Verificación de conformidad: conteos + legalidad de archivos generados.
 
-    Params: out_dir — dir ya generado (prepared/224); splits_dir — CSV 70/20/10.
-    Returns: 0 si conteos coinciden con splits, 1 si falla alguna; no escribe nada.
+    Parámetros: out_dir — dir ya generado (prepared/224); splits_dir — CSV 70/20/10.
+    Retorna: 0 si conteos coinciden con splits, 1 si falla alguna; no escribe nada.
     Por qué comparar contra splits: garantiza 1:1 zip↔GT tras el filtrado (S1 lo hizo; se re-chequea).
     """
     df = load_splits(splits_dir)

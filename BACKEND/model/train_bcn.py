@@ -78,8 +78,8 @@ def build_model():
 def lr_schedule(epoch):
     """Warmup lineal 3 épocas → cosine decay hasta 1e-5 al final.
 
-    Params: epoch — época 0-based.
-    Returns: float con la tasa de aprendizaje de esa época.
+    Parámetros: epoch — época 0-based.
+    Retorna: float con la tasa de aprendizaje de esa época.
     Por qué warmup+cosine: régimen estándar para fine-tuning con pesos imagenet;
     evita destruir los pesos pre-entrenados en las primeras épocas y decae suave
     hacia el mínimo para convergencia fina sobre el desbalance BCC.
@@ -94,10 +94,10 @@ def lr_schedule(epoch):
 class EvalMetrics(tf.keras.callbacks.Callback):
     """Evalúa val al cerrar cada época; inyecta val_* en logs y persiste CSV.
 
-    Params:
+    Parámetros:
         val_ds   — dataset de validación (sin augment, sin shuffle).
         out_csv  — ruta para log-epoch.csv (append por época).
-    Side effects: escribe log-epoch.csv y muta los logs del entrenamiento con
+    Efectos colaterales: escribe log-epoch.csv y muta los logs del entrenamiento con
     val_auprc/val_recall/val_specificity/val_balanced_acc/val_f2 para que
     EarlyStopping pueda monitorear val_auprc directamente.
     Por qué no keras.metrics: AUPRC no se puede agregar por batch; se computa
@@ -138,9 +138,9 @@ class EvalMetrics(tf.keras.callbacks.Callback):
 class PushCheckpoint(tf.keras.callbacks.Callback):
     """Push del checkpoint cada 5 épocas (modelo completo + pesos + métricas).
 
-    Params: out_dir — directorio donde se escribe `1.0.0-epN.keras`,
+    Parámetros: out_dir — directorio donde se escribe `1.0.0-epN.keras`,
     `.weights.h5`, `.json` (métricas de la época) y se sube a los repos HF.
-    Side effects: escribe archivos en OUT_DIR; sube a dermica-checkpoints-tmp
+    Efectos colaterales: escribe archivos en OUT_DIR; sube a dermica-checkpoints-tmp
     (tag `1.0.0-epN`) y dermica-metrics (JSON `1.0.0-epN.json`); borra en ambos
     los tags anteriores al actual (reglas E6). Solo actúa cada 5 épocas.
     """
@@ -176,9 +176,9 @@ class PushCheckpoint(tf.keras.callbacks.Callback):
 def restore_if_possible(model):
     """Descarga el último 1.0.0-epN y restaura pesos. Devuelve época inicial.
 
-    Params: model — modelo compilado ya instanciado.
-    Returns: int, época inicial para model.fit (0 si no hay resume posible).
-    Side effects: lee/descarga del repo tmp en HF; muta los pesos del modelo en sitio.
+    Parámetros: model — modelo compilado ya instanciado.
+    Retorna: int, época inicial para model.fit (0 si no hay resume posible).
+    Efectos colaterales: lee/descarga del repo tmp en HF; muta los pesos del modelo en sitio.
     Por qué fallo silencioso a 0: perder un resume no debe abortar el
     entrenamiento, pero el corte de cuota entre sesiones sí puede pausar; HF
     queda como estado persistente entre VMs (resume honesto).
@@ -261,8 +261,8 @@ def main() -> int:
 def eval_val(model, val_ds):
     """Predicciones sobre val: devuelve (y_true, y_score).
 
-    Params: model — modelo entrenado; val_ds — dataset de validación.
-    Returns: tuple (y_true, y_score) con listas binarias/[0..1].
+    Parámetros: model — modelo entrenado; val_ds — dataset de validación.
+    Retorna: tuple (y_true, y_score) con listas binarias/[0..1].
     Por qué separado: la versión completa final no requiere restaurar best weights,
     usa el modelo ya post-EarlyStopping (que restauró el mejor epoch solo).
     """

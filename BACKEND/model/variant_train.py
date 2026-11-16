@@ -50,8 +50,8 @@ tf.keras.utils.set_random_seed(SEED)
 def _build(arch: str):
     """Construye el modelo binario para la arquitectura pedida (small|large|efnetlite0).
 
-    Params: arch — clave de arquitectura; A/E→small, B→large, C→efnetlite0 (mapeado a EfficientNetB0).
-    Returns: tf.keras.Model con cabeza sigmoid sobre GlobalAveragePooling.
+    Parámetros: arch — clave de arquitectura; A/E→small, B→large, C→efnetlite0 (mapeado a EfficientNetB0).
+    Retorna: tf.keras.Model con cabeza sigmoid sobre GlobalAveragePooling.
     Por qué lazy getattr: keras.applications no garantiza el símbolo en todos los TF
     (p.ej. EfficientNetLite0 ausente en 2.21); esto falla solo si se pide esa clase.
     """
@@ -84,7 +84,7 @@ def _build(arch: str):
 def _build_multi():
     """Construye MobileNetV3-Small 8-way (CE multiclase) como referencia alternativa.
 
-    Returns: tf.keras.Model con cabeza softmax 8 clases (AK, BCC, BKL, DF, MEL, NV, SCC, VASC).
+    Retorna: tf.keras.Model con cabeza softmax 8 clases (AK, BCC, BKL, DF, MEL, NV, SCC, VASC).
     Por qué CE multiclase ponderada sobre baseline binario: comparación directa de
     infraestructura multiclass sobre el mismo pipeline; el BCC-score = softmax[BCC].
     """
@@ -109,7 +109,7 @@ def _build_multi():
 class FocalLoss(tf.keras.losses.Loss):
     """Focal loss binario: FL(p) = -alpha*(1-p)^gamma*log(p) para positivas.
 
-    Params: alpha — ponderación de la clase positiva (0.75: BCC es la clase rara);
+    Parámetros: alpha — ponderación de la clase positiva (0.75: BCC es la clase rara);
             gamma — exponente que enfoca ejemplos difíciles (2.0 estándar RetinaNet).
     Por qué sobre desbalance: BCE trata igual todas las positivas; focal premia
     los BCC difíciles/confundidos con NV, alineando con la prioridad clínica
@@ -140,8 +140,8 @@ def _lr(epoch):
 class EvalBinary(tf.keras.callbacks.Callback):
     """Eval binario por época: AUPRC/recall/specificity/BA/F2 sobre val.
 
-    Params: val_ds — dataset de validación; out_csv — log de métricas por época.
-    Side effects: escribe log-epoch.csv y muta los logs con val_auprc (para EarlyStopping).
+    Parámetros: val_ds — dataset de validación; out_csv — log de métricas por época.
+    Efectos colaterales: escribe log-epoch.csv y muta los logs con val_auprc (para EarlyStopping).
     Por qué VAR /CSV: métricas de cada época permiten comparar curva baseline vs
     variantes a idéntico presupuesto (mismo #épocas, mismo seed, mismos datos).
     """
@@ -220,8 +220,8 @@ class EvalMulti(tf.keras.callbacks.Callback):
 def _compute_class_weights_multi(train_dir):
     """Calcula class_weight inversamente proporcional a la frecuencia de clase.
 
-    Params: train_dir — directorio train con subcarpetas por clase.
-    Returns: dict {índice_clase: peso}; con 8 clases, n/(k*count_c).
+    Parámetros: train_dir — directorio train con subcarpetas por clase.
+    Retorna: dict {índice_clase: peso}; con 8 clases, n/(k*count_c).
     Por qué pesos inversamente proporcionales: mismo principio que el binario
     (compensar desbalance), pero a 8 clases con frecuencias muy dispersas.
     """
@@ -236,9 +236,9 @@ def _compute_class_weights_multi(train_dir):
 def run(cfg: str, out_dir: Path) -> int:
     """Ejecuta la corrida completa del experimento cfg (A..E) sin tocar HF.
 
-    Params: cfg — 'A'..'E'; out_dir — directorio de escritura de log-epoch.csv y metrics.json.
-    Returns: 0 al finalizar (escribe artefactos locales); no publica nada en HF.
-    Side effects: escribe en out_dir: log-epoch.csv y metrics.json.
+    Parámetros: cfg — 'A'..'E'; out_dir — directorio de escritura de log-epoch.csv y metrics.json.
+    Retorna: 0 al finalizar (escribe artefactos locales); no publica nada en HF.
+    Efectos colaterales: escribe en out_dir: log-epoch.csv y metrics.json.
     Por qué sin HF: comparación pura; sólo el GANADOR (si pasa el gate) se publica.
     """
     t0 = time.time()
