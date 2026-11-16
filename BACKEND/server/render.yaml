@@ -1,0 +1,21 @@
+# Render Blueprint — servicio web único; costo $0 (free tier)
+# Secretos (APP_API_KEY, HF_TOKEN) NO se commitean: se configuran como
+# variables de entorno en el dashboard (o vía API al crear el servicio).
+services:
+  - type: web
+    name: dermica-api
+    plan: free
+    runtime: python
+    rootDir: BACKEND/server
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: APP_API_KEY
+        sync: false        # la app manda Bearer en cada llamada
+      - key: HF_TOKEN
+        sync: false        # lector read-only de repos privados HF (dermica-models/metrics)
+      - key: HF_REPO_MODELS
+        value: dermica-models
+      - key: HF_REPO_METRICS
+        value: dermica-metrics
