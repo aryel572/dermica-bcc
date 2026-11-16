@@ -33,14 +33,14 @@ import tensorflow as tf
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metrics
 
-SEED = 42
-IMG_SIZE = 224
-BATCH_SIZE = 32
-EPOCHS = 40
-BIN_DIR = os.environ.get("PREPARED_BIN", "/content/prepared/224")
-MULTI_DIR = os.environ.get("PREPARED_MULTI", "/content/prepared-multi/224")
-CLASSES_8 = ["AK", "BCC", "BKL", "DF", "MEL", "NV", "SCC", "VASC"]  # orden alfabético de carpetas
-BCC_IDX = CLASSES_8.index("BCC")
+SEED = 42          # semilla única del proyecto: shuffle/augments reproducibles
+IMG_SIZE = 224     # input del modelo MobileNetV3-Small (checkpoint imagenet)
+BATCH_SIZE = 32    # batch GPU T4: cabe sin swapear con MobileNetV3
+EPOCHS = 40        # tope; EarlyStopping puede cortar (patience=10 sobre val_auprc)
+BIN_DIR = os.environ.get("PREPARED_BIN", "/content/prepared/224")      # dataset binario BCC/NO_BCC en el VM
+MULTI_DIR = os.environ.get("PREPARED_MULTI", "/content/prepared-multi/224")  # dataset multi-clase (8 clases) en el VM
+CLASSES_8 = ["AK", "BCC", "BKL", "DF", "MEL", "NV", "SCC", "VASC"]  # orden alfabético de carpetas (inferred labels); sin UNK (ausente en train)
+BCC_IDX = CLASSES_8.index("BCC")  # índice de la clase BCC en el one-hot (usado como BCC-score en multi-clase)
 
 random.seed(SEED)
 np.random.seed(SEED)
@@ -48,6 +48,13 @@ tf.keras.utils.set_random_seed(SEED)
 
 
 def _build(arch: str):
+    """Construye el modelo binario para la arquitectura pedida (small|large|efnetlite0).
+
+    Params: arch — clave de arquitectura; A/E→small, B→large, C→efnetlite0 (mapeado a EfficientNetB0).
+    Returns: tf.keras.Model con cabeza sigmoid sobre GlobalAveragePooling.
+    Por qué lazy getattr: keras.applications no garantiza el símbolo en todos los TF
+    (p.ej. EfficientNetLite0 ausente en 2.21); esto falla solo si se pide esa clase.
+    """
     augment = tf.keras.Sequential([
         tf.keras.layers.RandomFlip("horizontal_and_vertical"),
         tf.keras.layers.RandomRotation(10 / 360, seed=SEED),
@@ -75,6 +82,12 @@ def _build(arch: str):
 
 
 def _build_multi():
+    """Construye MobileNetV3-Small 8-way (CE multiclase) como referencia alternativa.
+
+    Returns: tf.keras.Model con cabeza softmax 8 clases (AK, BCC, BKL, DF, MEL, NV, SCC, VASC).
+    Por qué CE multiclase ponderada sobre baseline binario: comparación directa de
+    infraestructura multiclass sobre el mismo pipeline; el BCC-score = softmax[BCC].
+    """
     augment = tf.keras.Sequential([
         tf.keras.layers.RandomFlip("horizontal_and_vertical"),
         tf.keras.layers.RandomRotation(10 / 360, seed=SEED),
@@ -94,7 +107,14 @@ def _build_multi():
 
 
 class FocalLoss(tf.keras.losses.Loss):
-    """Focal loss binario: FL(p) = -alpha*(1-p)^gamma*log(p) para positivas."""
+    """Focal loss binario: FL(p) = -alpha*(1-p)^gamma*log(p) para positivas.
+
+    Params: alpha — ponderación de la clase positiva (0.75: BCC es la clase rara);
+            gamma — exponente que enfoca ejemplos difíciles (2.0 estándar RetinaNet).
+    Por qué sobre desbalance: BCE trata igual todas las positivas; focal premia
+    los BCC difíciles/confundidos con NV, alineando con la prioridad clínica
+    del proyecto sobre recall de BCC.
+    """
 
     def __init__(self, alpha=0.75, gamma=2.0, name="focal_loss"):
         super().__init__(name=name)
@@ -109,6 +129,7 @@ class FocalLoss(tf.keras.losses.Loss):
 
 
 def _lr(epoch):
+    """Warmup lineal 3 épocas → cosine decay hasta 1e-5 (misma receta que baseline S3)."""
     peak, min_lr, warm = 1e-3, 1e-5, 3
     if epoch < warm:
         return peak * (epoch + 1) / warm
@@ -117,7 +138,13 @@ def _lr(epoch):
 
 
 class EvalBinary(tf.keras.callbacks.Callback):
-    """Eval binario por época: AUPRC/recall/specificity/BA/F2 sobre val."""
+    """Eval binario por época: AUPRC/recall/specificity/BA/F2 sobre val.
+
+    Params: val_ds — dataset de validación; out_csv — log de métricas por época.
+    Side effects: escribe log-epoch.csv y muta los logs con val_auprc (para EarlyStopping).
+    Por qué VAR /CSV: métricas de cada época permiten comparar curva baseline vs
+    variantes a idéntico presupuesto (mismo #épocas, mismo seed, mismos datos).
+    """
 
     def __init__(self, val_ds, out_csv):
         super().__init__()
@@ -151,7 +178,15 @@ class EvalBinary(tf.keras.callbacks.Callback):
 
 
 class EvalMulti(tf.keras.callbacks.Callback):
-    """Eval para 8-way: BCC-score = softmax[BCC]; métricas binarias desde él."""
+    """Eval para 8-way: BCC-score = softmax[BCC]; métricas binarias desde él.
+
+    Por qué NO heredar de EvalBinary: la base binaria asume `y_score = sigmoid(x)`
+    (un solo factor = probabilidad de BCC). Aquí el score de BCC es softmax[BCC]
+    y el label_true debe derivarse con `argmax` de one-hot. Compartir clase
+    llevaría a condicionales dentro de cada método (anti-patrón); la duplicación es deliberada
+    aunque el cálculo métrico final sea idéntico (metrics.reporte).
+    """
+
 
     def __init__(self, val_ds, out_csv):
         super().__init__()
@@ -183,6 +218,13 @@ class EvalMulti(tf.keras.callbacks.Callback):
 
 
 def _compute_class_weights_multi(train_dir):
+    """Calcula class_weight inversamente proporcional a la frecuencia de clase.
+
+    Params: train_dir — directorio train con subcarpetas por clase.
+    Returns: dict {índice_clase: peso}; con 8 clases, n/(k*count_c).
+    Por qué pesos inversamente proporcionales: mismo principio que el binario
+    (compensar desbalance), pero a 8 clases con frecuencias muy dispersas.
+    """
     counts = {c: len(list(Path(train_dir, c).glob("*.jpg"))) for c in CLASSES_8}
     n = sum(counts.values())
     k = len(counts)
@@ -192,6 +234,13 @@ def _compute_class_weights_multi(train_dir):
 
 
 def run(cfg: str, out_dir: Path) -> int:
+    """Ejecuta la corrida completa del experimento cfg (A..E) sin tocar HF.
+
+    Params: cfg — 'A'..'E'; out_dir — directorio de escritura de log-epoch.csv y metrics.json.
+    Returns: 0 al finalizar (escribe artefactos locales); no publica nada en HF.
+    Side effects: escribe en out_dir: log-epoch.csv y metrics.json.
+    Por qué sin HF: comparación pura; sólo el GANADOR (si pasa el gate) se publica.
+    """
     t0 = time.time()
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -268,6 +317,7 @@ def run(cfg: str, out_dir: Path) -> int:
 
 
 def _finish(cfg, t0, out_dir, rep):
+    """Escribe metrics.json final y lo imprime (config + métricas + tiempo)."""
     payload = {"config": cfg, **rep, "segundos": round(time.time() - t0, 2)}
     (out_dir / "metrics.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False))
     print("\n== RESULTADO", cfg, "==")
@@ -276,6 +326,7 @@ def _finish(cfg, t0, out_dir, rep):
 
 
 def main() -> int:
+    """CLI de experimento: --config A..E; artefactos locales en --out-dir/exp-X/."""
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", required=True, choices=["A", "B", "C", "D", "E"])
     ap.add_argument("--out-dir", type=Path, default=Path(os.environ.get("OUT_DIR", "/content/out")))

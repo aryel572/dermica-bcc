@@ -97,7 +97,7 @@ class EvalMetrics(tf.keras.callbacks.Callback):
     Params:
         val_ds   — dataset de validación (sin augment, sin shuffle).
         out_csv  — ruta para log-epoch.csv (append por época).
-    Side effects: escribe log-epoch.csv y mutá logs del entrenamiento con
+    Side effects: escribe log-epoch.csv y muta los logs del entrenamiento con
     val_auprc/val_recall/val_specificity/val_balanced_acc/val_f2 para que
     EarlyStopping pueda monitorear val_auprc directamente.
     Por qué no keras.metrics: AUPRC no se puede agregar por batch; se computa
@@ -178,7 +178,7 @@ def restore_if_possible(model):
 
     Params: model — modelo compilado ya instanciado.
     Returns: int, época inicial para model.fit (0 si no hay resume posible).
-    Side effects: lee/descarga del repo tmp en HF; mutá pesos del modelo en sitio.
+    Side effects: lee/descarga del repo tmp en HF; muta los pesos del modelo en sitio.
     Por qué fallo silencioso a 0: perder un resume no debe abortar el
     entrenamiento, pero el corte de cuota entre sesiones sí puede pausar; HF
     queda como estado persistente entre VMs (resume honesto).
