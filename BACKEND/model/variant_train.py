@@ -150,11 +150,36 @@ class EvalBinary(tf.keras.callbacks.Callback):
         print(f"\n  época {row['epoch']}: val_auprc={rep['auprc']:.4f} recall={rep['recall']:.4f} ba={rep['balanced_acc']:.4f} f2={rep['f2']:.4f}")
 
 
-class EvalMulti(EvalBinary):
+class EvalMulti(tf.keras.callbacks.Callback):
     """Eval para 8-way: BCC-score = softmax[BCC]; métricas binarias desde él."""
 
-    def _score(self, x):
-        return self.model.predict(x, verbose=0)[:, BCC_IDX]
+    def __init__(self, val_ds, out_csv):
+        super().__init__()
+        self.val_ds, self.out_csv = val_ds, Path(out_csv)
+        self.out_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    def on_epoch_end(self, epoch, logs=None):
+        logs = logs or {}
+        y_true, y_score = [], []
+        for x, y in self.val_ds:
+            y_score.extend(self.model.predict(x, verbose=0)[:, BCC_IDX].tolist())
+            y_true.extend(np.argmax(y.numpy(), axis=1).tolist())
+        binary_y = [1 if c == BCC_IDX else 0 for c in y_true]
+        rep = metrics.reporte(binary_y, y_score)
+        for k, v in rep.items():
+            if isinstance(v, float):
+                logs[k] = v
+        logs["val_auprc"] = rep["auprc"]
+        logs["val_recall"] = rep["recall"]
+        row = {"epoch": epoch + 1,
+               **{k: round(float(rep[k]), 6) for k in ("auprc", "recall", "especificidad", "balanced_acc", "f2", "precision")}}
+        new = not self.out_csv.exists()
+        with open(self.out_csv, "a", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(row.keys()))
+            if new:
+                w.writeheader()
+            w.writerow(row)
+        print(f"\n  época {row['epoch']}: val_auprc={rep['auprc']:.4f} recall={rep['recall']:.4f} ba={rep['balanced_acc']:.4f} f2={rep['f2']:.4f}")
 
 
 def _compute_class_weights_multi(train_dir):
