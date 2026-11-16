@@ -34,12 +34,20 @@ for _p in Path(__file__).resolve().parents:
         break
 if ENV_PATH is None:
     ENV_PATH = Path("/content/dermica-bcc/.env")
-REPO_TMP = "dermica-checkpoints-tmp"
-REPO_METRICS = "dermica-metrics"
-REPO_MODELS = "dermica-models"
+
+REPO_TMP = "dermica-checkpoints-tmp"      # repo temporal para checkpoints intermedios (borrar al completar)
+REPO_METRICS = "dermica-metrics"          # repo de dataset con JSONs de métricas por versión/época
+REPO_MODELS = "dermica-models"            # repo de modelo para releases completos (versión final sin -ep#)
 
 
 def _read_env() -> dict:
+    """Lee .env KEY=VALUE sin dependencias (mismo patrón inline que S1/S2).
+
+    Efectos colaterales: ninguno; el dict queda en memoria y los valores se usan solo
+    para construir el cliente HF (nunca se imprimen).
+    Por qué sin dotenv/shared helpers: la VM de Colab y este repo no comparten
+    dependencias; el inline parser mantiene el módulo autocontenido.
+    """
     env = {}
     if not ENV_PATH.exists():
         raise SystemExit(f"ERROR: falta .env en dermica-bcc ({ENV_PATH.name})")
@@ -53,6 +61,12 @@ def _read_env() -> dict:
 
 
 def _api() -> HfApi:
+    """Construye el cliente HF con HF_TOKEN/HF_OWNER desde .env.
+
+    Retorna: tuple (api, owner) — api autenticada y nombre/owner del org HF.
+    Por qué SystemExit en vez de raise: es un fallo de entorno/configuración;
+    el caller lo ve y aborta con mensaje claro, sin rastro de secreto.
+    """
     env = _read_env()
     token = env.get("HF_TOKEN")
     owner = env.get("HF_OWNER")
@@ -62,7 +76,13 @@ def _api() -> HfApi:
 
 
 def latest_tag(version: str):
-    """Devuelve el tag `VERSION-epN` con N máximo en el repo tmp; None si no hay."""
+    """Devuelve el `VERSION-epN` con N máximo en el repo tmp; None si no hay.
+
+    Parámetros: version — línea base, p.ej. "1.0.0".
+    Retorna: str con `{version}-ep{N}`, o None si el repo tmp no tiene checkpoints.
+    Por qué match de keras|weights: el repo puede contener archivos de contexto
+    (p.ej. .meta.json) que no son checkpoints válidos para resume.
+    """
     api, owner = _api()
     files = api.list_repo_files(f"{owner}/{REPO_TMP}", repo_type="model")
     best, best_n = None, -1
@@ -74,7 +94,14 @@ def latest_tag(version: str):
 
 
 def download(filename: str, dest: Path, repo: str = "tmp") -> None:
-    """Descarga un archivo del repo indicado a dest (tmp/metrics/models)."""
+    """Descarga filename del repo indicado a dest ('tmp'|'metrics'|'models').
+
+    Parámetros: filename — ruta relativa en el repo (p.ej. '1.0.0-ep5.weights.h5');
+            dest — Path destino local; repo — repo lógico donde buscar.
+    Efectos colaterales: escribe dest (tras normalizar el nombre bajo local_dir).
+    Por qué hf_hub_download + rename: garantiza nombre exacto esperado por el
+    resto del pipeline (latest_tag y verificaciones comparan nombres puntuales).
+    """
     api, owner = _api()
     repo_id = {"tmp": REPO_TMP, "metrics": REPO_METRICS, "models": REPO_MODELS}[repo]
     api.hf_hub_download(f"{owner}/{repo_id}", repo_type="model" if repo != "metrics" else "dataset",
@@ -86,7 +113,15 @@ def download(filename: str, dest: Path, repo: str = "tmp") -> None:
 
 
 def upload_checkpoint(paths: dict, tag: str, metrics_row: dict) -> None:
-    """Sube {keras, weights} como `tag.*` al repo tmp (crea commit atómico)."""
+    """Sube {keras, weights} como `tag.*` al repo tmp (commit atómico).
+
+    Parámetros: paths — dict con keys 'keras' y 'weights' (Path); tag — `X.Y.Z-epN`;
+            metrics_row — dict logs de la época (se filtra a floats para meta.json).
+    Efectos colaterales: crea commit en dermica-checkpoints-tmp; escribe `tag.meta.json`,
+    `tag.keras` y `tag.weights.h5`.
+    Por qué commit único: sube modelo+pesos+meta juntos, evitando repo intermedio
+    inconsistente si la sesión muere a mitad de subida.
+    """
     api, owner = _api()
     repo_id = f"{owner}/{REPO_TMP}"
     operations = []
@@ -107,7 +142,13 @@ def upload_checkpoint(paths: dict, tag: str, metrics_row: dict) -> None:
 
 
 def upload_metrics_json(metrics_path: Path, tag: str) -> None:
-    """Sube/sobreescribe `tag.json` en dermica-metrics (dataset)."""
+    """Sube/sobrescribe `tag.json` en dermica-metrics (dataset).
+
+    Parámetros: metrics_path — ruta local del JSON; tag — `X.Y.Z-epN` o `X.Y.Z`.
+    Efectos colaterales: crea/sobrescribe `tag.json` en dermica-metrics.
+    Por qué sobrescribir: las métricas por época se actualizan con cada checkpoint
+    nuevo; el archivo representa siempre el último estado reportado del tag.
+    """
     api, owner = _api()
     from huggingface_hub import CommitOperationAdd
     api.create_commit(
@@ -117,7 +158,14 @@ def upload_metrics_json(metrics_path: Path, tag: str) -> None:
 
 
 def delete_stale(version: str, current_epoch: int) -> None:
-    """Borra en tmp y metrics los `-epN` con N inferior al actual."""
+    """Borra en tmp y metrics los `-epN` con N inferior al actual.
+
+    Parámetros: version — línea base (p.ej. '1.0.0'); current_epoch — épica actual (ya subida).
+    Efectos colaterales: borra archivos `-ep<N<current_epoch>.*` en dermica-checkpoints-tmp
+    y dermica-metrics (regla E6: solo vive el último checkpoint de época).
+    Por qué borrar también en metrics: las métricas de épocas superadas no se
+    conservan; el repo metrics solo guarda la versión final completa (1.0.0.json).
+    """
     api, owner = _api()
     for repo, rtype in ((REPO_TMP, "model"), (REPO_METRICS, "dataset")):
         files = api.list_repo_files(f"{owner}/{repo}", repo_type=rtype)
@@ -135,7 +183,15 @@ def delete_stale(version: str, current_epoch: int) -> None:
 
 
 def upload_complete(model, final_metrics: dict, version: str, out_dir: Path) -> None:
-    """Sube la versión completa (sin sufijo) a models + metrics y borra el último -epN."""
+    """Sube la versión completa (sin sufijo) a models + metrics y borra el último -epN.
+
+    Parámetros: model — tf.keras.Model entrenado; final_metrics — dict de métricas finales;
+            version — línea base (p.ej. '1.0.0'); out_dir — dir escribible para artefactos.
+    Efectos colaterales: crea commits en dermica-models (`1.0.0.keras`), dermica-metrics
+    (`1.0.0.json`), y borra en tmp y metrics todos los archivos `-epN` restantes.
+    Por qué borrar al completar: la regla del proyecto exige que al final solo quede
+    la versión completa + métricas permanentes; los checkpoints intermedios sobran.
+    """
     api, owner = _api()
     from huggingface_hub import CommitOperationAdd, CommitOperationDelete
     complete = out_dir / f"{version}.keras"
@@ -167,6 +223,13 @@ def upload_complete(model, final_metrics: dict, version: str, out_dir: Path) -> 
 
 
 def main() -> int:
+    """CLI: `latest` imprime el tag más nuevo en tmp (vacío si no hay).
+
+    Parámetros: cmd — 'latest'; version — línea base (default '1.0.0').
+    Retorna: 0 siempre; output stdout va a capturar por quien llama (resume logic).
+    Por qué CLI mínimo: otras piezas (train_bcn) invocan funciones directamente;
+    esto solo expone una consulta para depuración/scripts manuales.
+    """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("cmd", choices=["latest"])
     ap.add_argument("version", nargs="?", default="1.0.0")
