@@ -33,9 +33,21 @@ from pathlib import Path
 import numpy as np
 import tensorflow as tf
 
-APP_ROOT = Path(__file__).resolve().parents[4]  # .../APP_DERMICA: monorepo
+# Monorepo: puede vivir en BACKEND/data_pipeline/prep/ (parents[4] = APP_DERMICA)
+# o en /content/model (ruta plana de Colab): buscar el directorio que contiene dermica-bcc/
+APP_ROOT = None
+for _p in Path(__file__).resolve().parents:
+    if (_p / "dermica-bcc").is_dir():
+        APP_ROOT = _p
+        break
+if APP_ROOT is None:
+    APP_ROOT = Path("/content")
 ENV_PATH = APP_ROOT / "dermica-bcc" / ".env"
+if not ENV_PATH.exists():
+    ENV_PATH = Path("/content/dermica-bcc/.env")
 TRAIN_PREPARED = APP_ROOT / "resultados" / "s3-training" / "prepared" / "224" / "train"
+if not TRAIN_PREPARED.exists():
+    TRAIN_PREPARED = Path("/content/prepared/train")
 REPO_MODELS = "dermica-models"
 MODEL_FILE = "1.0.0.keras"    # float release publicado en S3
 IMG_SIZE = 224                # input del modelo
