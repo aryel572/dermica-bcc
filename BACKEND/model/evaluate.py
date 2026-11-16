@@ -5,10 +5,10 @@ Evalúa el modelo `1.0.0.keras` de dermica-models sobre el split TEST (2.488
 imágenes, BCC 317) y escribe metrics JSON. TEST es de una sola pasada: el
 modelo se fijó en S3 y nunca se tocó esta partición.
 
-El preprocessing Replica EXACTAMENTE el del entrenamiento en S3:
-decode_jpeg → cast float32 → /255 (rango [0,1]) → MobileNetV3-Small →
-sigmoid. NO se usa mobilenet_v3.preprocess_input (el checkpoint de entrenamiento
-ya fue ajustado con [0,1]; aplicar otra escala rompería las métricas).
+El preprocessing Replica EXACTAMENTE el del entrenamiento en S3, que NO normaliza:
+decode_jpeg → cast float32 (rango [0,255]) → MobileNetV3-Small → sigmoid.
+NO se usa mobilenet_v3.preprocess_input ni /255 (el checkpoint de entrenamiento
+ya fue ajustado sobre [0,255]; cualquier otra escala rompería las métricas).
 
 Uso:
     uv run python evaluate.py --data /content/test-224 \
@@ -63,11 +63,14 @@ def evaluar(data_dir: Path):
 
 
 def _parse(path, label):
-    """Lee y normaliza una imagen (mismo pipeline que S3)."""
+    """Lee y normaliza una imagen SIN normalizar (mismo pipeline que S3).
+
+    Por qué sin /255: image_dataset_from_directory en train_bcn NO normaliza;
+    el modelo se fine-tuneó sobre valores [0,255] y debe verse igual en eval.
+    """
     img = tf.io.read_file(path)
     img = tf.io.decode_jpeg(img, channels=3)
-    img = tf.cast(img, tf.float32) / 255.0
-    return img, label
+    return tf.cast(img, tf.float32), label
 
 
 def main() -> int:
@@ -77,7 +80,8 @@ def main() -> int:
     Retorna: 0 OK, 1 error o args inconsistentes.
     """
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--data", type=Path, required=True, help="directorio test-224 con subcarpetas BCC/NO_BCC")
+    ap.add_argument("--data", type=Path, default=None,
+                    help="directorio test-224 con subcarpetas BCC/NO_BCC (obligatorio para evaluar)")
     ap.add_argument("--split-csv", type=Path, default=None, help="CSV del split usado (informativo)")
     ap.add_argument("--model", type=Path, default=None, help="ruta al .keras")
     ap.add_argument("--tag", default="test", help="etiqueta del split evaluado (test|val)")
@@ -92,6 +96,9 @@ def main() -> int:
         print("ERROR: --model es obligatorio para evaluar")
         return 1
 
+    if args.data is None:
+        print("ERROR: --data es obligatorio para evaluar")
+        return 1
     paths, y_true = evaluar(args.data)
     if not paths:
         print(f"ERROR: {args.data} no contiene imágenes")
@@ -117,7 +124,7 @@ def main() -> int:
         "f2": round(rep["f2"], 4),
         "precision": round(rep["precision"], 4),
         "tp": int(rep["tp"]), "fp": int(rep["fp"]), "tn": int(rep["tn"]), "fn": int(rep["fn"]),
-        "preprocess": "decode_jpeg→float32→/255",
+        "preprocess": "decode_jpeg→float32[0,255]",
         "modelo": "MobileNetV3-Small (fine-tuned), 1.0.0",
         "_generado_utc": datetime.now(timezone.utc).isoformat(),
     }
