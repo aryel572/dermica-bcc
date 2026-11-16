@@ -31,8 +31,8 @@ JPEG_Q = 85      # q85: suficiente para 224 px, ~35-50 KB por imagen
 def main() -> int:
     """Ejecuta el re-escalado multi-clase de train+val.
 
-    Side effects: escribe OUT_DIR/{train,val}/<CLASE>/<image>.jpg (fuera del repo).
-    Returns: 0 si todo imagen tuvo entry en el zip, 1 si alguna faltó (saltadas).
+    Efectos colaterales: escribe OUT_DIR/{train,val}/<CLASE>/<image>.jpg (fuera del repo).
+    Retorna: 0 si todo imagen tuvo entry en el zip, 1 si alguna faltó (saltadas).
     Por qué marcar falla 1: un archivo faltante es señal de que el zip/version cambió;
     no debe pasar desapercibido en la preparación del entrenamiento.
     """

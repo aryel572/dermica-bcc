@@ -15,10 +15,10 @@ SEED = 42               # semilla única del proyecto: reproducibilidad del shuf
 def _parse(path, label):
     """Lee y normaliza una imagen para el pipeline.
 
-    Params:
+    Parámetros:
         path  — ruta tf/string de la imagen (típicamente jpg).
         label — etiqueta asociada (0 = NO_BCC, 1 = BCC).
-    Returns:
+    Retorna:
         tuple (img, label) con img float32 [0..1] shape (H, W, 3).
     Por qué decode_jpeg + /255: pipeline de tf.data trabaja con tensores float32
     ya normalizados; "224 px" es el input contract del modelo.
@@ -32,9 +32,9 @@ def _parse(path, label):
 def cargar_datasets(base_dir):
     """Devuelve (train_ds, val_ds) en tf.data con shuffle determinista.
 
-    Params:
+    Parámetros:
         base_dir — directorio que contiene train/ y val/ con subcarpetas BCC/NO_BCC.
-    Returns:
+    Retorna:
         tuple (train_ds, val_ds). train viene shuffled (seed fija) y val sin shuffle
         (orden determinista para evaluación reproducible).
     Por qué dos cargar_datasets distintos: el augment de train vive en el modelo

@@ -43,7 +43,7 @@ REPO_MODELS = "dermica-models"            # repo de modelo para releases complet
 def _read_env() -> dict:
     """Lee .env KEY=VALUE sin dependencias (mismo patrón inline que S1/S2).
 
-    Side effects: ninguno; el dict queda en memoria y los valores se usan solo
+    Efectos colaterales: ninguno; el dict queda en memoria y los valores se usan solo
     para construir el cliente HF (nunca se imprimen).
     Por qué sin dotenv/shared helpers: la VM de Colab y este repo no comparten
     dependencias; el inline parser mantiene el módulo autocontenido.
@@ -63,7 +63,7 @@ def _read_env() -> dict:
 def _api() -> HfApi:
     """Construye el cliente HF con HF_TOKEN/HF_OWNER desde .env.
 
-    Returns: tuple (api, owner) — api autenticada y nombre/owner del org HF.
+    Retorna: tuple (api, owner) — api autenticada y nombre/owner del org HF.
     Por qué SystemExit en vez de raise: es un fallo de entorno/configuración;
     el caller lo ve y aborta con mensaje claro, sin rastro de secreto.
     """
@@ -78,8 +78,8 @@ def _api() -> HfApi:
 def latest_tag(version: str):
     """Devuelve el `VERSION-epN` con N máximo en el repo tmp; None si no hay.
 
-    Params: version — línea base, p.ej. "1.0.0".
-    Returns: str con `{version}-ep{N}`, o None si el repo tmp no tiene checkpoints.
+    Parámetros: version — línea base, p.ej. "1.0.0".
+    Retorna: str con `{version}-ep{N}`, o None si el repo tmp no tiene checkpoints.
     Por qué match de keras|weights: el repo puede contener archivos de contexto
     (p.ej. .meta.json) que no son checkpoints válidos para resume.
     """
@@ -96,9 +96,9 @@ def latest_tag(version: str):
 def download(filename: str, dest: Path, repo: str = "tmp") -> None:
     """Descarga filename del repo indicado a dest ('tmp'|'metrics'|'models').
 
-    Params: filename — ruta relativa en el repo (p.ej. '1.0.0-ep5.weights.h5');
+    Parámetros: filename — ruta relativa en el repo (p.ej. '1.0.0-ep5.weights.h5');
             dest — Path destino local; repo — repo lógico donde buscar.
-    Side effects: escribe dest (tras normalizar el nombre bajo local_dir).
+    Efectos colaterales: escribe dest (tras normalizar el nombre bajo local_dir).
     Por qué hf_hub_download + rename: garantiza nombre exacto esperado por el
     resto del pipeline (latest_tag y verificaciones comparan nombres puntuales).
     """
@@ -115,9 +115,9 @@ def download(filename: str, dest: Path, repo: str = "tmp") -> None:
 def upload_checkpoint(paths: dict, tag: str, metrics_row: dict) -> None:
     """Sube {keras, weights} como `tag.*` al repo tmp (commit atómico).
 
-    Params: paths — dict con keys 'keras' y 'weights' (Path); tag — `X.Y.Z-epN`;
+    Parámetros: paths — dict con keys 'keras' y 'weights' (Path); tag — `X.Y.Z-epN`;
             metrics_row — dict logs de la época (se filtra a floats para meta.json).
-    Side effects: crea commit en dermica-checkpoints-tmp; escribe `tag.meta.json`,
+    Efectos colaterales: crea commit en dermica-checkpoints-tmp; escribe `tag.meta.json`,
     `tag.keras` y `tag.weights.h5`.
     Por qué commit único: sube modelo+pesos+meta juntos, evitando repo intermedio
     inconsistente si la sesión muere a mitad de subida.
@@ -144,8 +144,8 @@ def upload_checkpoint(paths: dict, tag: str, metrics_row: dict) -> None:
 def upload_metrics_json(metrics_path: Path, tag: str) -> None:
     """Sube/sobrescribe `tag.json` en dermica-metrics (dataset).
 
-    Params: metrics_path — ruta local del JSON; tag — `X.Y.Z-epN` o `X.Y.Z`.
-    Side effects: crea/sobrescribe `tag.json` en dermica-metrics.
+    Parámetros: metrics_path — ruta local del JSON; tag — `X.Y.Z-epN` o `X.Y.Z`.
+    Efectos colaterales: crea/sobrescribe `tag.json` en dermica-metrics.
     Por qué sobrescribir: las métricas por época se actualizan con cada checkpoint
     nuevo; el archivo representa siempre el último estado reportado del tag.
     """
@@ -160,8 +160,8 @@ def upload_metrics_json(metrics_path: Path, tag: str) -> None:
 def delete_stale(version: str, current_epoch: int) -> None:
     """Borra en tmp y metrics los `-epN` con N inferior al actual.
 
-    Params: version — línea base (p.ej. '1.0.0'); current_epoch — épica actual (ya subida).
-    Side effects: borra archivos `-ep<N<current_epoch>.*` en dermica-checkpoints-tmp
+    Parámetros: version — línea base (p.ej. '1.0.0'); current_epoch — épica actual (ya subida).
+    Efectos colaterales: borra archivos `-ep<N<current_epoch>.*` en dermica-checkpoints-tmp
     y dermica-metrics (regla E6: solo vive el último checkpoint de época).
     Por qué borrar también en metrics: las métricas de épocas superadas no se
     conservan; el repo metrics solo guarda la versión final completa (1.0.0.json).
@@ -185,9 +185,9 @@ def delete_stale(version: str, current_epoch: int) -> None:
 def upload_complete(model, final_metrics: dict, version: str, out_dir: Path) -> None:
     """Sube la versión completa (sin sufijo) a models + metrics y borra el último -epN.
 
-    Params: model — tf.keras.Model entrenado; final_metrics — dict de métricas finales;
+    Parámetros: model — tf.keras.Model entrenado; final_metrics — dict de métricas finales;
             version — línea base (p.ej. '1.0.0'); out_dir — dir escribible para artefactos.
-    Side effects: crea commits en dermica-models (`1.0.0.keras`), dermica-metrics
+    Efectos colaterales: crea commits en dermica-models (`1.0.0.keras`), dermica-metrics
     (`1.0.0.json`), y borra en tmp y metrics todos los archivos `-epN` restantes.
     Por qué borrar al completar: la regla del proyecto exige que al final solo quede
     la versión completa + métricas permanentes; los checkpoints intermedios sobran.
@@ -225,8 +225,8 @@ def upload_complete(model, final_metrics: dict, version: str, out_dir: Path) -> 
 def main() -> int:
     """CLI: `latest` imprime el tag más nuevo en tmp (vacío si no hay).
 
-    Params: cmd — 'latest'; version — línea base (default '1.0.0').
-    Returns: 0 siempre; output stdout va a capturar por quien llama (resume logic).
+    Parámetros: cmd — 'latest'; version — línea base (default '1.0.0').
+    Retorna: 0 siempre; output stdout va a capturar por quien llama (resume logic).
     Por qué CLI mínimo: otras piezas (train_bcn) invocan funciones directamente;
     esto solo expone una consulta para depuración/scripts manuales.
     """
