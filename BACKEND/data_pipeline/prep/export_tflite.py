@@ -139,7 +139,18 @@ def report_latency(tflite_path: Path, val_dir: Path) -> dict:
     Por qué val como proxy (no TRAIN ni TEST): prueba realista sobre datos que
     el modelo no vio durante calibración; NO es la medición final de evaluación.
     """
-    interpreter = tf.lite.Interpreter(model_path=str(tflite_path))
+    # El delegate XNNPACK falla en este runtime (nodo 117 del grafo int8).
+    # Se usa LiteRT (paquete oficial, sin delegados por defecto); si no está
+    # instalado se cae a tf.lite con sus delegados por defecto.
+    try:
+        from ai_edge_litert.interpreter import Interpreter as LiteInterpreter, OpResolverType
+        interpreter = LiteInterpreter(
+            model_path=str(tflite_path),
+            experimental_op_resolver_type=OpResolverType.BUILTIN_WITHOUT_DEFAULT_DELEGATES,
+            num_threads=4,
+        )
+    except ImportError:
+        interpreter = tf.lite.Interpreter(model_path=str(tflite_path))
     interpreter.allocate_tensors()
     in_det = interpreter.get_input_details()[0]
     out_det = interpreter.get_output_details()[0]
@@ -182,7 +193,15 @@ def main() -> int:
         if not p.exists():
             print(f"FAIL: no existe {p}")
             return 1
-        interpreter = tf.lite.Interpreter(model_path=str(p))
+        try:
+            from ai_edge_litert.interpreter import Interpreter as LiteInterpreter, OpResolverType
+            interpreter = LiteInterpreter(
+                model_path=str(p),
+                experimental_op_resolver_type=OpResolverType.BUILTIN_WITHOUT_DEFAULT_DELEGATES,
+                num_threads=4,
+            )
+        except ImportError:
+            interpreter = tf.lite.Interpreter(model_path=str(p))
         interpreter.allocate_tensors()
         print(f"VERIFICACIÓN: OK — {p} cargável ({p.stat().st_size} bytes)")
         return 0

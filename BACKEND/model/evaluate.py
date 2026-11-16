@@ -106,13 +106,23 @@ def main() -> int:
         return 1
 
     if args.tflite is not None:
-        ys = []
-        interpreter = tf.lite.Interpreter(model_path=str(args.tflite))
+        # LiteRT sin delegados por defecto: el runtime puede fallar con XNNPACK
+        # sobre grafos int8; el fallback tf.lite usa kernels de referencia.
+        try:
+            from ai_edge_litert.interpreter import Interpreter as LiteInterpreter, OpResolverType
+            interpreter = LiteInterpreter(
+                model_path=str(args.tflite),
+                experimental_op_resolver_type=OpResolverType.BUILTIN_WITHOUT_DEFAULT_DELEGATES,
+                num_threads=4,
+            )
+        except ImportError:
+            interpreter = tf.lite.Interpreter(model_path=str(args.tflite))
         interpreter.allocate_tensors()
         in_det = interpreter.get_input_details()[0]
         out_det = interpreter.get_output_details()[0]
         in_scale, in_zp = in_det.get("quantization", (0.0, 0))
         out_scale, out_zp = out_det.get("quantization", (0.0, 0))
+        ys = []
         for p in paths:
             img = tf.io.read_file(p)
             img = tf.io.decode_jpeg(img, channels=3)
