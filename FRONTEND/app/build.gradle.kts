@@ -39,6 +39,32 @@ android {
     // SDK local solo tiene android-35 y build-tools 35: se fija explícitamente.
     buildToolsVersion = "35.0.0"
 
+    // Firma del build release. Las credenciales viven en local.properties (gitignored);
+    // el keystore en ~/.android/dermica-release.jks (fuera del repositorio, jamás se commitea).
+    // Sin credenciales, el build falla aquí mismo con un mensaje claro.
+    fun requiredRelease(key: String): String =
+        localProps.getProperty(key) ?: error(
+            "Falta $key en FRONTEND/local.properties; crea la credencial y reintenta el build release"
+        )
+
+    signingConfigs {
+        create("release") {
+            storeFile = file(System.getProperty("user.home") + "/.android/dermica-release.jks")
+            storePassword = requiredRelease("RELEASE_STORE_PASSWORD")
+            keyAlias = requiredRelease("RELEASE_KEY_ALIAS")
+            keyPassword = requiredRelease("RELEASE_KEY_PASSWORD")
+        }
+    }
+
+    buildTypes {
+        getByName("release") {
+            isMinifyEnabled = true
+            isShrinkResources = false
+            signingConfig = signingConfigs.getByName("release")
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

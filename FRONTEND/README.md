@@ -16,7 +16,8 @@ Aplicación Android nativa (Kotlin + Jetpack Compose) para **apoyo al tamizaje d
 ```bash
 cd FRONTEND
 ./gradlew :app:assembleDebug        # APK debug
-./gradlew :app:testDebugUnitTest    # tests JVM (49/49)
+./gradlew :app:testDebugUnitTest    # tests JVM (59/59)
+./gradlew :app:assembleRelease      # APK release firmado (minify R8); credenciales en local.properties
 ```
 
 Requiere Android SDK con `android-35` + `build-tools 35.0.0` (o ajusta `buildToolsVersion`) y JDK 21.
