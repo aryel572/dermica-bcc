@@ -86,3 +86,8 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
 }
+
+// Nombre del artefacto de salida: APP_DERMICA-debug.apk / APP_DERMICA-release.apk
+base {
+    archivesName.set("APP_DERMICA")
+}
