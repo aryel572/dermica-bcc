@@ -14,6 +14,6 @@ EL SOFTWARE SE PROPORCIONA "TAL CUAL", SIN GARANTÍA DE NINGÚN TIPO, EXPRESA O 
 
 **El código de este repositorio está licenciado bajo MIT (arriba). Los DATOS no.**
 
-- El dataset **ISIC 2019** es propiedad de sus titulares (ISIC Archive / HAM10000 / BCN20000 / MSK) y está licenciado bajo **CC BY-NC 4.0**: uso **no comercial** con citación obligatoria. Este repositorio **no redistribuye imágenes** de ISIC 2019; los manifiestos y la configuración derivados se publican con atribución en `BACKEND/data_pipeline/manifests/DATASET_CARD.md`.
+- El dataset **ISIC 2019** es propiedad de sus titulares (ISIC Archive / HAM10000 / BCN20000 / MSK) y está licenciado bajo **CC BY-NC 4.0**: uso **no comercial** con citación obligatoria. Este repositorio **no redistribuye imágenes** de ISIC 2019; los manifiestos y la configuración derivados se publican con atribución en `pipeline/manifests/DATASET_CARD.md`.
 - El modelo entrenado y su artefacto `.tflite` son derivados de ISIC 2019 bajo las mismas restricciones de uso no comercial; su distribución se limita a la app de investigación del proyecto y a los canales oficiales del mismo.
 - Cualquier uso del modelo o de los manifiestos fuera de la investigación académica debe verificar la compatibilidad con CC BY-NC 4.0.

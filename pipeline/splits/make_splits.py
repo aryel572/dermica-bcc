@@ -48,7 +48,7 @@ from pathlib import Path
 import pandas as pd
 from sklearn.model_selection import StratifiedGroupKFold
 
-# config.json vive junto al código de este pipeline (data_pipeline/) y forma
+# config.json vive junto al código de este pipeline (pipeline/) y forma
 # parte del repo: es la única fuente de verdad para la semilla y los ratios
 # del split. Se resuelve desde __file__ para que el CWD no importe. La
 # consumen make(), verify_outputs() y las compuertas de ratios.

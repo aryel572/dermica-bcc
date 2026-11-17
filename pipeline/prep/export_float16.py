@@ -68,10 +68,10 @@ try:
 except ModuleNotFoundError:
     tf = None
 
-# Raíz del repo (este archivo vive en BACKEND/data_pipeline/prep/, tres
+# Raíz del repo (este archivo vive en pipeline/prep/, dos
 # niveles por debajo de la raíz). Solo se usa para el default repo-relativo de
 # --env-file (el .env del repo, gitignored); nada del repo se modifica.
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 ENV_POR_DEFECTO = REPO_ROOT / ".env"
 # Nombre del repo git-remote (Hugging Face) que aloja el checkpoint float
 # publicado en la fase de entrenamiento; NO es una ruta local. Lo consumen

@@ -44,7 +44,7 @@ android {
     // Sin credenciales, el build falla aquí mismo con un mensaje claro.
     fun requiredRelease(key: String): String =
         localProps.getProperty(key) ?: error(
-            "Falta $key en FRONTEND/local.properties; crea la credencial y reintenta el build release"
+            "Falta $key en android/local.properties; crea la credencial y reintenta el build release"
         )
 
     signingConfigs {

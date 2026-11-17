@@ -26,12 +26,12 @@ Sin flechas de vuelta: la app nunca envía imágenes ni telemetría al servidor;
 
 ## Productos y ubicación
 
-| Producto | Hoy | Tras Fase 1 | Responsabilidad única |
-|----------|-----|-------------|------------------------|
-| pipeline | `BACKEND/data_pipeline/` | `pipeline/` | Auditar ISIC, formar TESIS, splits 70/20/10, manifiestos |
-| model    | `BACKEND/model/` | `model/` | Entrenar/evaluar MobileNetV3-Small, exportar TFLite, publicar métricas |
-| server   | `BACKEND/server/` | `server/` | Distribuir el release por HTTP (Render, free) |
-| android  | `FRONTEND/` | `android/` | Tamizaje on-device + historial local + actualización del modelo |
+| Producto | Ubicación | Responsabilidad única |
+|----------|-----------|------------------------|
+| pipeline | `pipeline/` | Auditar ISIC, formar TESIS, splits 70/20/10, manifiestos |
+| model    | `model/` | Entrenar/evaluar MobileNetV3-Small, exportar TFLite, publicar métricas |
+| server   | `server/` | Distribuir el release por HTTP (Render, free) |
+| android  | `android/` | Tamizaje on-device + historial local + actualización del modelo |
 
 ## Artefactos-contrato (4 + 1)
 

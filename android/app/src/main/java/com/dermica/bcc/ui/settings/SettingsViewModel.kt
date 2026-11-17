@@ -77,7 +77,7 @@ class SettingsViewModel(
         if (current is ReleaseUiState.Checking || current is ReleaseUiState.Downloading) return
         if (!isApiKeyConfigured) {
             _releaseState.value = ReleaseUiState.Error(
-                "Configura APP_API_KEY en FRONTEND/local.properties para descargar.",
+                "Configura APP_API_KEY en android/local.properties para descargar.",
             )
             return
         }
