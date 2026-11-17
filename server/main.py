@@ -1,11 +1,37 @@
 #!/usr/bin/env python3
 """FastAPI — distribución de la ayuda de tamizaje (APP_DERMICA).
 
-Sirve el artefacto entrenado de BCC (1.0.0, float16) desde Hugging Face:
+Propósito
+---------
+Servicio HTTP que expone el release 1.0.0 del modelo de BCC a los clientes
+autorizados: liveness/versión (públicos) y métricas/descarga del artefacto
+(autenticados). Nada de entrenamiento aquí: es la cara de distribución.
+
+Qué recibe
+----------
+Variables de entorno (secretos jamás en código ni en el repo):
+    APP_API_KEY        Bearer de las rutas autenticadas; la valida `auth_guard`.
+    HF_TOKEN           Lectura read-only de los repos HF privados.
+    HF_OWNER           Owner/org de los repos dermica-*.
+    HF_REPO_MODELS     Override del nombre del repo de modelos (opcional; default dermica-models).
+    HF_REPO_METRICS    Override del nombre del repo de métricas (opcional; default dermica-metrics).
+Sin entorno de HF configurado, las rutas protegidas responden 500
+`server misconfigured (HF_TOKEN/HF_OWNER)`.
+
+Qué produce
+-----------
+Respuestas HTTP del servicio (descritas en la documentación pública /docs,
+/redoc, /openapi.json):
 - /healthz         → liveness de Render (sin auth)
 - /model/version   → versión y cuantización del release (sin auth)
 - /model/latest    → metadata del release (metrics JSON), requiere auth
 - /model/download  → stream del .tflite float16, requiere auth
+
+Quién consume
+-------------
+La app Android oficial (consulta versión, descarga el .tflite y verifica
+SHA-256/size antes de usarlo) y Render (healthCheckPath de /healthz).
+Ningún módulo importa este archivo: es el entrypoint del servicio.
 
 Documentación pública por decisión del proyecto: /docs, /redoc y
 /openapi.json no exigen token y el esquema no contiene secretos (los
@@ -13,6 +39,8 @@ ejemplos usan placeholders tipo `Bearer <APP_API_KEY>`).
 
 Secretos: APP_API_KEY (Bearer de las rutas autenticadas) y HF_TOKEN (lectura
 read-only de HF) vienen del entorno; nunca del código ni del repo.
+
+Fase: S4 (CRISP-DM Deployment).
 """
 
 import os
@@ -25,19 +53,29 @@ from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer
 from pydantic import BaseModel, Field
 
+# Origen: contrato del release 1.0.0 (tag semver + cuantización float16 del artefacto).
+# Consumidores: app FastAPI (version=VERSION), /model/version, TFLITE_PATH_IN_REPO, METRIC_FILE.
 VERSION = "1.0.0"
 QUANTIZATION = "float16"
+# Remote IDs de los repos HF privados del proyecto; overridables por entorno para tests/staging.
+# Consumidores: _download (vía model_latest/model_download).
 REPO_MODELS = os.environ.get("HF_REPO_MODELS", "dermica-models")
 REPO_METRICS = os.environ.get("HF_REPO_METRICS", "dermica-metrics")
+# Formato de los artefactos en el repo del release (contrato de dermica-models / dermica-metrics).
+# Consumidores: model_download (ruta del .tflite) y model_latest (nombre del JSON de métricas).
 TFLITE_PATH_IN_REPO = f"{VERSION}/model-{QUANTIZATION}.tflite"
 METRIC_FILE = f"{VERSION}.json"
 # SHA-256 del artefacto float16 del release (verificado contra HF en la
 # publicación y replicado en la app Android como ModelManager.EXPECTED_SHA256).
+# Origen: release 1.0.0 publicado; lo consume también /model/latest (float16_sha256) y la app.
 TFLITE_SHA256 = "d62c401c5f66a7eccd5f752b2d7aa73964fe6f75a92acde3cae951b0d911cc0a"
-TFLITE_SIZE_BYTES = 1945356  # ~1.95 MB; la app compara tamaño antes de verificar el SHA
+# ~1.95 MB; la app compara tamaño antes de verificar el SHA (barato primero, hasheado después).
+# Origen: publicación del release 1.0.0; réplica del float16_size_bytes en /model/latest.
+TFLITE_SIZE_BYTES = 1945356
 
 # Etiquetas de la documentación (Swagger/Redoc): agrupan los endpoints por
 # propósito y declaran el nivel de acceso de cada grupo.
+# Consumidor: FastAPI(openapi_tags=...) → /docs, /redoc y /openapi.json.
 TAGS_METADATA = [
     {
         "name": "🏷️ Estado",
@@ -49,6 +87,7 @@ TAGS_METADATA = [
     },
 ]
 
+# Consumidor: FastAPI(description=...) — es el texto de la portada de /docs y /redoc.
 APP_DESCRIPTION = """\
 API pública de distribución del modelo de tamizaje de **carcinoma basocelular (BCC)** de **APP_DERMICA**. Expone el liveness, la versión del release vigente y el artefacto empaquetado en la app Android (`1.0.0`, cuantización `float16`), alojados en Hugging Face privado.
 
@@ -62,6 +101,8 @@ API pública de distribución del modelo de tamizaje de **carcinoma basocelular 
 El esquema `/openapi.json` puede importarse directamente en Postman (Import → Link / File).
 """
 
+# Consumidor: uvicorn apunta a este objeto (Render lo levanta con `uvicorn main:app`,
+# rootDir=server según render.yaml; en local, `uvicorn server.main:app`).
 app = FastAPI(
     title="APP_DERMICA API",
     description=APP_DESCRIPTION,
@@ -82,35 +123,57 @@ app = FastAPI(
 # verificación real la hace `auth_guard` (Header crudo, lógica intacta); así
 # /docs y el esquema muestran el candado sin alterar códigos ni orden de
 # validación (401 {"detail":"unauthorized"} en todos los fallos).
+# Consumidor: /model/latest y /model/download (dependencies=[Depends(bearer_scheme)]); no valida nada.
 bearer_scheme = HTTPBearer(
     scheme_name="bearerAuth",
     description="Token de la app oficial (`APP_API_KEY`). Enviar `Authorization: Bearer <APP_API_KEY>`.",
     auto_error=False,
 )
 
-# Respuesta 401 común: mismo cuerpo que lanza `auth_guard` hoy.
+# Respuesta 401 común: mismo cuerpo que lanza `auth_guard` hoy. Consumidoras: responses=... de las rutas autenticadas.
 UNAUTHORIZED_RESPONSE = {
     "description": "`Authorization` ausente o inválida: falta el header, no es `Bearer`, o la clave no coincide con `APP_API_KEY`.",
     "content": {"application/json": {"example": {"detail": "unauthorized"}}},
 }
 # Respuesta 503 común: comportamiento del tier free de Render mientras la instancia despierta.
+# Consumidoras: responses=... de las cuatro rutas.
 COLD_START_RESPONSE = {
     "description": "Instancia aún despertando en Render free: la primera request puede tardar hasta ~60 s; reintentar unos segundos después.",
 }
 # Respuesta 500 común: el servidor no tiene la configuración de Hugging Face.
+# Consumidoras: responses=... de /model/latest y /model/download (rutas que usan _download).
 MISCONFIGURED_RESPONSE = {
     "description": "Configuración incompleta del servidor (faltan `HF_TOKEN`/`HF_OWNER` en el entorno).",
 }
 
 
 class HealthResponse(BaseModel):
-    """Liveness del proceso (/healthz)."""
+    """Liveness del proceso (/healthz).
+
+    Propósito: cuerpo mínimo de /healthz — solo confirma que el proceso está
+    arriba; no toca HF ni el modelo (Render lo usa como healthCheckPath).
+    Campos:
+        status — str, siempre "ok" hoy; el tipo queda str para no atar consumidores
+                 a un literal (la sonda solo mira el código 200).
+    Consumidor: FastAPI(response_model=HealthResponse) → valida y documenta el cuerpo.
+    """
 
     status: str = Field(description="Estado del proceso", examples=["ok"])
 
 
 class VersionResponse(BaseModel):
-    """Versión y cuantización del release vigente (/model/version)."""
+    """Versión y cuantización del release vigente (/model/version).
+
+    Propósito: cuerpo del ping público ligero de la app — conoce el tag semver
+    y la cuantización del artefacto sin descargarlo ni consultar HF.
+    Campos:
+        version      — str, tag del release vigente (hoy "1.0.0"; ver VERSION).
+        quantization — str, cuantización del artefacto (hoy "float16"; ver QUANTIZATION).
+    Consumidor: FastAPI(response_model=VersionResponse) → /model/version; la app
+                usa este ping como señal de qué release hay que traer.
+    Nota: la app Android decide actualizar solo si cambió la versión; no hay
+    llamadas a HF desde este endpoint (responde de las constantes de módulo).
+    """
 
     version: str = Field(description="Tag del release vigente", examples=["1.0.0"])
     quantization: str = Field(description="Cuantización del artefacto del release", examples=["float16"])
@@ -119,10 +182,13 @@ class VersionResponse(BaseModel):
 def auth_guard(authorization: Optional[str] = Header(default=None)) -> bool:
     """Valida el header Authorization: Bearer <APP_API_KEY>.
 
-    Parámetros: authorization — header Authorization completo (p.ej.
-    'Bearer abc'); None si no fue enviado.
-    Retorna: True si coincide.
-    Lanza: 401 con detail 'unauthorized' en caso contrario.
+    Parámetros: authorization — str | None; header Authorization completo (p.ej.
+    'Bearer abc'); None si no fue enviado. FastAPI lo inyecta desde los headers.
+    Retorna: True si el token coincide (los endpoints lo usan como guard en dependencies).
+    Lanza: 401 HTTPException con detail 'unauthorized' en todos los fallos
+           (header ausente, formato no-Bearer, token vacío o discrepancia).
+    Globales: APP_API_KEY vía os.environ (leída del entorno en cada request —
+    rotarla no exige reiniciar el proceso, solo que el entorno cambie).
     Por qué compare_digest: comparación en tiempo constante para secretos.
     """
     if authorization is None:
@@ -156,7 +222,12 @@ def auth_guard(authorization: Optional[str] = Header(default=None)) -> bool:
     },
 )
 def healthz():
-    """Liveness simple (200 siempre que el proceso esté arriba)."""
+    """Liveness simple (200 siempre que el proceso esté arriba).
+
+    Parámetros: ninguno. Retorna: dict {"status": "ok"} (cuerpo validado por HealthResponse).
+    Lanza: nada (no toca red ni disco).
+    Globales: ninguna. Consumidor: Render (healthCheckPath; ver render.yaml).
+    """
     return {"status": "ok"}
 
 
@@ -180,16 +251,27 @@ def healthz():
     },
 )
 def model_version():
-    """Versión y cuantización del release (público; ping ligero para la app)."""
+    """Versión y cuantización del release (público; ping ligero para la app).
+
+    Parámetros: ninguno. Retorna: dict con VERSION y QUANTIZATION (constantes de módulo).
+    Lanza: nada (sin HF ni disco; válido incluso con el release a medias).
+    Globales: VERSION, QUANTIZATION. Consumidor: la app Android (señaliza release).
+    """
     return {"version": VERSION, "quantization": QUANTIZATION}
 
 
 def _download(repo: str, filename: str, repo_type: str) -> str:
     """Descarga un archivo desde HF privado con el token de entorno.
 
-    Parámetros: repo — nombre del repo HF (sin owner); filename — ruta en el repo;
+    Parámetros: repo — nombre del repo HF (sin owner), p.ej. 'dermica-models';
+                filename — ruta en el repo, p.ej. '1.0.0/model-float16.tflite';
                 repo_type — 'model'|'dataset'.
-    Retorna: ruta local del archivo descargado (cache HF).
+    Retorna: str con la ruta local del archivo (cache propia de HF, reutilizada
+             si ya existe — no re-descarga).
+    Lanza: 500 HTTPException 'server misconfigured (HF_TOKEN/HF_OWNER)' si falta
+           alguna variable; errores de hf hub (auth/red/cuota) propagan sin traducir
+           (FastAPI responde 500).
+    Globales: HF_TOKEN, HF_OWNER vía os.environ (leídos por request).
     Por qué hf_hub_download: maneja cache propio y autentica con el token; no
     re-descargar si ya está en cache.
     """
@@ -204,6 +286,8 @@ def _download(repo: str, filename: str, repo_type: str) -> str:
 # Payload real del release 1.0.0 (dermica-metrics/1.0.0.json, servido tal cual).
 # El ejemplo redondea las métricas a 4 decimales para legibilidad; la API
 # conserva la precisión completa guardada en HF. Conteos TP/FP/TN/FN enteros.
+# Consumidor: responses=... de /model/latest (example de la documentación pública);
+# es copia del JSON real del release, no se genera en runtime.
 LATEST_EXAMPLE = {
     "tag": "1.0.0",
     "seed": 42,
@@ -260,8 +344,17 @@ LATEST_EXAMPLE = {
 def model_latest(_: bool = Depends(auth_guard)):
     """Metadata del release: lee 1.0.0.json desde dermica-metrics vía HF.
 
-    Requiere Bearer APP_API_KEY. Retorna el dict completo de métricas públicas
-    (AUPRC, recall, especificidad, BA, F2, SHA-256 del artefacto, etc.).
+    Parámetros: ninguno propio (el guard llega como `_` desde Depends(auth_guard);
+                FastAPI lo resuelve, el valor nunca se usa aquí).
+    Retorna: dict con el JSON completo del release tal cual está guardado en
+             dermica-metrics — el servidor no añade ni filtra nada; los campos
+             float16_* vienen en el JSON del release, no los inyecta esta ruta.
+    Lanza: 401 vía auth_guard; 500 si faltan HF_TOKEN/HF_OWNER o hf falla;
+           propaga errores de parseo JSON del archivo cacheado.
+    Globales: REPO_METRICS, METRIC_FILE.
+    Nota: el `import json` es lazy (dentro de la función); no cambia el comportamiento,
+    solo el momento del import.
+    Requiere Bearer APP_API_KEY.
     """
     import json
     path = _download(REPO_METRICS, METRIC_FILE, "dataset")
@@ -298,11 +391,22 @@ def model_latest(_: bool = Depends(auth_guard)):
 def model_download(_: bool = Depends(auth_guard)):
     """Stream del .tflite float16 desde dermica-models (1.0.0/model-float16.tflite).
 
-    Requiere Bearer APP_API_KEY. Retorna bytes crudo con Content-Disposition
-    attachment (la app los guarda y verifica SHA-256 contra /model/latest).
+    Parámetros: ninguno propio (el guard llega como `_` desde Depends(auth_guard)).
+    Retorna: StreamingResponse application/octet-stream con el archivo en chunks de
+             1 MiB (genera constante sin cargar el binario completo en memoria);
+             cabecera Content-Disposition attachment con filename=model-float16.tflite.
+    Lanza: 401 vía auth_guard; 500 si faltan HF_TOKEN/HF_OWNER o hf falla.
+    Globales: REPO_MODELS, TFLITE_PATH_IN_REPO. (TFLITE_SIZE_BYTES y TFLITE_SHA256
+              aparecen en la documentación del endpoint, no en el cuerpo; la verificación
+              del artefacto la hace la app, no este servidor.)
+    Requiere Bearer APP_API_KEY.
+
+    El generador interno `_stream` cierra el archivo al terminar la respuesta
+    (iter(lambda: f.read(1 << 20), b"") lee bloques de 1 MiB hasta EOF).
     """
     path = _download(REPO_MODELS, TFLITE_PATH_IN_REPO, "model")
     def _stream():
+        # generador de 1 MiB/bloque; el `with` cierra el archivo cuando StreamingResponse agota el stream
         with open(path, "rb") as f:
             for chunk in iter(lambda: f.read(1 << 20), b""):
                 yield chunk

@@ -1,10 +1,29 @@
 #!/usr/bin/env python3
 """Métricas del modelo (binario BCC vs no-BCC).
 
-Cálculo de métricas sobre predicciones sigmoid: AUPRC (área bajo la curva
-precisión-recall), que es la métrica PRIMARIA del proyecto para desbalanceo de
-clases (BCC ≈ 12.76 % del train), recall (sensibilidad), especificidad,
-balanced accuracy y F2. Todas partiendo de las salidas del modelo en [0, 1].
+Propósito
+---------
+Calcula la métrica PRIMARIA del proyecto (AUPRC) y las métricas secundarias
+(recall, especificidad, balanced accuracy, F2, precision y conteos TP/FP/TN/FN)
+a partir de las salidas del modelo en [0, 1]. Es la única fuente de verdad de
+métricas: el entrenamiento, la evaluación formal y el release leen de aquí.
+
+Qué recibe
+----------
+`y_true` (etiquetas binarias 0/1, iterables) e `y_score` (probabilidad de BCC en
+[0, 1]). Sin flags ni entorno: es una librería interna, no un script.
+
+Qué produce
+-----------
+`reporte()`: dict plano JSON-serializable de métricas (floats redondeados por el
+llamador, no aquí) + conteos enteros; `auprc()`: float average_precision;
+`confusion_at()`: tuple (tp, fp, tn, fn).
+
+Quién consume
+-------------
+`model/train_bcn.py` (EvalMetrics, una vez por época), `model/variant_train.py`
+(EvalBinary/EvalMulti), `model/evaluate.py` (rama de evaluación y release).
+`push_hf.py` no lo importa: recibe dicts/JSON ya computados y los persiste en HF.
 
 Decisiones de definición:
 - AUPRC se usa como métrica primaria porque, con ~13 % de prevalencia, la curva
@@ -12,6 +31,8 @@ Decisiones de definición:
   área son más informativas clínicamente.
 - F2 (no F1): recall pesa el doble que precisión, alineado con la prioridad
   clínica de no omitir BCC (error de omisión inaceptable).
+
+Fase: S1/S2 (decisiones de métricas del split y del problema), consumido desde S3/S4.
 """
 
 import numpy as np
@@ -25,6 +46,10 @@ def auprc(y_true, y_score):
         y_score — puntuaciones/probabilidad de la clase positiva BCC en [0, 1].
     Retorna:
         float con el average_precision (área bajo la curva precisión-recall).
+    Lanza: nada ante y_true sin positivos (sklearn emite UserWarning
+           "No positive class found" y devuelve 0.0); sí propaga IndexError
+           con y_true vacío.
+    Globales: ninguna (sklearn se importa perezosamente dentro de la función).
     Por qué sklearn: implementa AP nativamente con mismos def que en S1/S2.
     """
     from sklearn.metrics import average_precision_score
@@ -40,6 +65,9 @@ def confusion_at(y_true, y_score, threshold=0.5):
         threshold — corte de decisión (por defecto 0.5, neutral para sigmoide).
     Retorna:
         tuple (tp, fp, tn, fn) con conteos enteros.
+    Lanza: nada propio con entradas válidas; arrays de distinto largo fallan
+           con ValueError por broadcasting de numpy (el llamador garantiza el mismo len).
+    Globales: ninguna.
     Por qué umbral 0.5: la sigmoide del modelo y la F2 no penalizan el umbral;
     si se requiere calibración clínica, ajustar acá (no en el cálculo).
     """
@@ -60,10 +88,15 @@ def reporte(y_true, y_score, threshold=0.5):
         y_score   — puntuaciones/probabilidad en [0, 1].
         threshold — umbral de decisión (por defecto 0.5).
     Retorna:
-        dict con auprc, recall/sensibilidad, especificidad, balanced_acc, f2,
-        precision, y los conteos crudos tp/fp/tn/fn.
+        dict con auprc, recall/sensibilidad (alias clínico), especificidad,
+        balanced_acc, f2, precision, y los conteos crudos tp/fp/tn/fn.
+        `sensibilidad` y `recall` llevan el mismo valor (nombre clínico vs técnico).
+    Lanza: ninguna por divisiones por cero (se devuelve 0.0); sí propaga ValueError
+           si y_true/y_score tienen largo distinto (vía confusion_at).
+    Globales: ninguna.
     Por qué no fallar con divisiones por cero: se devuelve 0.0 y se sigue
     (métricas documentales, no deben tirar abajo el entrenamiento).
+    Nota: `beta2 = 4.0` es β² de F2 (β=2 → β²=4); el recall pesa el doble.
     """
     tp, fp, tn, fn = confusion_at(y_true, y_score, threshold)
     recall = tp / (tp + fn) if (tp + fn) else 0.0
