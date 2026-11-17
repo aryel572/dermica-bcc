@@ -1,6 +1,8 @@
 package com.dermica.bcc.data.model
 
 import android.util.Log
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.preferencesDataStore
@@ -14,7 +16,15 @@ import kotlinx.coroutines.sync.withLock
 import java.io.File
 
 // DataStore dedicado del modelo: flag de borrado por el usuario (S1/S7).
-private val android.content.Context.modelDataStore by preferencesDataStore(name = "model_prefs")
+// Fix reviewer-corroborated R4-002: si model_prefs se corrompe o no se puede leer
+// (IOException/CorruptionException), el handler reemplaza el archivo por
+// Preferencias vacías. Semántica correcta: prefs ilegibles => NO borrado por el
+// usuario => ensureModel() re-copia el asset como en un primer arranque
+// (fallo seguro: la app nunca queda sin modelo por un archivo dañado).
+private val android.content.Context.modelDataStore by preferencesDataStore(
+    name = "model_prefs",
+    corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+)
 private val KEY_DELETED_BY_USER = booleanPreferencesKey("model_deleted_by_user")
 
 private const val TAG = "ModelManager"
@@ -31,6 +41,8 @@ private const val ASSET_NAME = "model-float16.tflite"
  * - Si el usuario lo borró (flag model_deleted_by_user=true) y no hay modelo,
  *   NO se re-copia el asset: la app queda realmente sin modelo hasta que el
  *   usuario restaure o descargue (S1/S7).
+ * - Si model_prefs es ilegible, se trata como NO borrado por el usuario
+ *   (fix reviewer-corroborated R4-002): se re-copia el asset; nunca crash en arranque.
  * - Si la verificación falla, se borra la copia interna y se publica FAILED:
  *   la app no puede ejecutar inferencia con un modelo corrupto.
  */
@@ -92,8 +104,15 @@ class ModelManager(
         const val EXPECTED_SHA256 = "d62c401c5f66a7eccd5f752b2d7aa73964fe6f75a92acde3cae951b0d911cc0a"
     }
 
-    private suspend fun deletedByUser(): Boolean =
+    // Fix reviewer-corroborated R4-002: cualquier fallo al leer las prefs se
+    // interpreta como "no borrado por el usuario" (fallo seguro: re-copia el asset).
+    // El corruptionHandler cubre el archivo dañado; este guard cubre I/O transitoria.
+    private suspend fun deletedByUser(): Boolean = runCatching {
         context.modelDataStore.data.first()[KEY_DELETED_BY_USER] ?: false
+    }.getOrElse { error ->
+        Log.w(TAG, "prefs ilegibles; se asume modelo no borrado: ${error.message}")
+        false
+    }
 
     /** Copia asset → filesDir/model.tflite vía temporal y renombrado, luego verifica (S1). */
     private suspend fun copyFromAssetAndVerify() {
