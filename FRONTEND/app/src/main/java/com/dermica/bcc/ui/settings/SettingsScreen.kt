@@ -32,6 +32,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.dermica.bcc.data.model.ModelState
 import java.util.Locale
@@ -122,6 +123,10 @@ fun SettingsScreen(
             }
 
             DownloadProgress(releaseState)
+
+            // T6/S5: leyenda de siglas, última sección de Configuración.
+            // Refuerza la comprensión de TA/NFS/PEO/TP/TN/FP/FN sin ocupar el Home.
+            SiglasLegend()
         }
     }
 
@@ -313,3 +318,76 @@ private fun downloadingLabel(state: ReleaseUiState.Downloading): String {
 // SHA-256 del asset base 1.0.0, truncado a 8 hex para lectura visual (el valor
 // completo se verifica programáticamente contra ModelManager.EXPECTED_SHA256).
 private const val MODEL_SHA_TRUNCATED = "d62c401c…"
+
+/**
+ * Entrada de la leyenda: sigla (línea en negrita) + definición breve debajo
+ * (T6/S5). Sin fórmulas: la app solo muestra resultados, nunca cómo se calculan.
+ */
+private data class GlossaryEntry(val sigla: String, val definition: String)
+
+// Copy sugerido por producto (T6); tono neutral, sin dramatizar ni prometer
+// diagnóstico. Se incluye la definición completa tras la sigla (no solo el
+// nombre corto) para que quien nunca usó una matriz de confusión lo entienda.
+private val SIGLAS = listOf(
+    GlossaryEntry(
+        sigla = "TA",
+        definition = "Tasa de aciertos: qué proporción de las imágenes del subconjunto fueron clasificadas correctamente.",
+    ),
+    GlossaryEntry(
+        sigla = "NFS",
+        definition = "Falsas sospechas: imágenes sin carcinoma basocelular reportadas como si lo tuvieran.",
+    ),
+    GlossaryEntry(
+        sigla = "PEO",
+        definition = "Errores de omisión: casos con carcinoma basocelular que el modelo no detectó.",
+    ),
+    GlossaryEntry(
+        sigla = "TP",
+        definition = "Verdaderos positivos: carcinoma basocelular detectado como carcinoma basocelular.",
+    ),
+    GlossaryEntry(
+        sigla = "TN",
+        definition = "Verdaderos negativos: sin carcinoma basocelular detectado como tal.",
+    ),
+    GlossaryEntry(
+        sigla = "FP",
+        definition = "Falsos positivos: sin carcinoma basocelular reportado como carcinoma basocelular.",
+    ),
+    GlossaryEntry(
+        sigla = "FN",
+        definition = "Falsos negativos: carcinoma basocelular que el modelo pasó por alto.",
+    ),
+)
+
+/**
+ * Leyenda de siglas (T6/S5): última sección de Configuración, tras Actualización.
+ *
+ * Siempre visible (nunca tras un diálogo): es el refuerzo para quien no conoce la
+ * nomenclatura del resultado de subconjunto; la definición va debajo de la sigla
+ * en negrita como un glosario plano, sin fórmula alguna. TalkBack lee cada par
+ * "SIGLA — definición" en orden de aparición.
+ */
+@Composable
+private fun SiglasLegend() {
+    Text(text = "Leyenda de siglas", style = MaterialTheme.typography.titleMedium)
+    Column(
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier.padding(top = 4.dp),
+    ) {
+        SIGLAS.forEach { entry ->
+            Column {
+                Text(
+                    text = entry.sigla,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    text = entry.definition,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
