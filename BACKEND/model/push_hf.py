@@ -3,8 +3,11 @@
 
 Repos: dermica-checkpoints-tmp (modelo+pesos de época `1.0.0-epN`, temporal),
 dermica-metrics (JSONs `1.0.0-epN.json` y `1.0.0.json`), dermica-models
-(versiones completas `1.0.0` sin sufijo). HF_TOKEN del .env se lee inline
-(sin dotenv, sin imprimir).
+(versiones completas `1.0.0` sin sufijo). HF_TOKEN y HF_OWNER del archivo de
+entorno se leen inline (sin dotenv, sin imprimir). La ruta del archivo de
+entorno la decide quien ejecuta vía la variable DERMICA_ENV_FILE
+(por defecto `./.env` en el directorio de trabajo); el repositorio nunca
+resuelve rutas fuera del repositorio ni asume layout de entornos ajenos.
 
 Reglas de vida de archivos:
 - subir `1.0.0-epN` borra cualquier `-epM` con M < N ya superado;
@@ -17,6 +20,7 @@ Uso CLI:
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -24,16 +28,15 @@ from pathlib import Path
 from huggingface_hub import HfApi
 from huggingface_hub.utils import HfHubHTTPError
 
-# Monorepo: este archivo vive en BACKEND/model/; el .env está en dermica-bcc/.
-# En Colab (ruta plana /content/model), busca hacia arriba el directorio que
-# contiene dermica-bcc/; si no existe, usa /content/dermica-bcc como raíz.
-ENV_PATH = None
-for _p in Path(__file__).resolve().parents:
-    if (_p / "dermica-bcc").is_dir():
-        ENV_PATH = _p / "dermica-bcc" / ".env"
-        break
-if ENV_PATH is None:
-    ENV_PATH = Path("/content/dermica-bcc/.env")
+def _env_file() -> Path:
+    """Ruta del archivo de entorno: variable DERMICA_ENV_FILE o (por defecto)
+    `./.env` en el directorio de trabajo actual. El módulo nunca resuelve
+    rutas desde fuera del repositorio ni asume un layout de trabajo ajeno.
+    """
+    ruta = os.environ.get('DERMICA_ENV_FILE')
+    if ruta:
+        return Path(ruta).expanduser()
+    return Path('.env')
 
 REPO_TMP = "dermica-checkpoints-tmp"      # repo temporal para checkpoints intermedios (borrar al completar)
 REPO_METRICS = "dermica-metrics"          # repo de dataset con JSONs de métricas por versión/época
@@ -41,17 +44,16 @@ REPO_MODELS = "dermica-models"            # repo de modelo para releases complet
 
 
 def _read_env() -> dict:
-    """Lee .env KEY=VALUE sin dependencias (mismo patrón inline que S1/S2).
+    """Lee el archivo de entorno (DERMICA_ENV_FILE o `./.env`) sin dependencias.
 
     Efectos colaterales: ninguno; el dict queda en memoria y los valores se usan solo
     para construir el cliente HF (nunca se imprimen).
-    Por qué sin dotenv/shared helpers: la VM de Colab y este repo no comparten
-    dependencias; el inline parser mantiene el módulo autocontenido.
     """
+    env_path = _env_file()
     env = {}
-    if not ENV_PATH.exists():
-        raise SystemExit(f"ERROR: falta .env en dermica-bcc ({ENV_PATH.name})")
-    for raw in ENV_PATH.read_text().splitlines():
+    if not env_path.is_file():
+        raise SystemExit(f"ERROR: falta el archivo de entorno: {env_path}")
+    for raw in env_path.read_text().splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
