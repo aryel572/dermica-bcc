@@ -21,7 +21,7 @@ Monorepo con 4 productos, cada uno en su carpeta de raíz (`pipeline/`, `model/`
 
 - **Modelo**: MobileNetV3-Small fine-tuned, cuantización **float16**, empaquetado en la app y actualizable por backend. AUPRC: **0.7788 (val) / 0.7709 (test)**. Clasificación binaria BCC vs no-BCC.
 - **Android**: APK release v1.0.0 (`APP_DERMICA-v1.apk`, 22.26 MB, R8, firma v2, tag `v1.0.0`, sha256 `e5eb7077…`). Inferencia 100 % on-device; historial local (Room); sin telemetría.
-- **Server**: FastAPI desplegada en Render (free). `/healthz` y `/model/version` públicos; `/model/latest` y `/model/download` requieren `Authorization: Bearer`.
+- **Server**: FastAPI desplegada en Render (free). `/healthz` y `/model/version` públicos; `/model/latest` y `/model/download` requieren `Authorization: Bearer`. Cómo correrla, endpoints y variables en [server/README.md](server/README.md).
 - **Pipeline**: división 70/20/10 agrupada por `lesion_id` (sin fuga entre particiones); imágenes TESIS excluidas por contrato (`tesis_exclude.csv`).
 
 ## Cómo compilar y probar
