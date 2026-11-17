@@ -4,6 +4,8 @@ Aplicación Android nativa para **apoyo al tamizaje del carcinoma basocelular (B
 
 Estado: **release 1.0.0 publicada** (modelo float16 + APK v1.0.0).
 
+CI: **GitHub Actions** (`.github/workflows/ci.yml`) — compileall Python, smoke del servidor y build/tests de Android en push a `main` y en cada PR.
+
 ## Qué productos contiene este repositorio
 
 Monorepo con 4 productos, cada uno en su carpeta de raíz (`pipeline/`, `model/`, `server/`, `android/`), sin cambios de lógica ni de contratos entre sí (ver `ARCHITECTURE.md`).

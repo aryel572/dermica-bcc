@@ -1,0 +1,161 @@
+# CI de APP_DERMICA — monorepo (raíz del workspace uv)
+#
+# Dispara en push a main y en cualquier pull_request. Cuatro jobs, sin secrets:
+# los tests Python y el smoke del servidor no tocan la red real (APP_API_KEY
+# queda vacía en CI; la app Android compila igual con la clave vacía).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python-pipeline:
+    name: Python pipeline (compileall)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      # setup-uv pineado por SHA (v10.3.1): cadena de suministro y publicación estable
+      - name: Install uv
+        uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
+        with:
+          enable-cache: true
+      - name: Sync workspace (all packages)
+        run: uv sync --all-packages
+      # Compila shared/pipeline/model/server como chequeo de sintaxis de todo el Python del repo
+      - name: Compile-check shared/pipeline/model/server
+        run: uv run python -m compileall -q shared pipeline model server
+
+  server-smoke:
+    name: Server smoke (uvicorn, no secrets)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
+        with:
+          enable-cache: true
+      - name: Sync workspace (all packages)
+        run: uv sync --all-packages
+      # Sin HF_TOKEN ni APP_API_KEY: /healthz y /model/version son públicos;
+      # /model/latest sin token debe responder 401 antes de tocar HF.
+      - name: Smoke test /healthz, /model/version (200) y /model/latest (401 sin token)
+        shell: bash
+        run: |
+          set -u
+          # Arranque en background; el trap mata el servidor pase lo que pase.
+          uv run uvicorn --app-dir server main:app --port 8421 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null; wait "$server_pid" 2>/dev/null; true' EXIT
+          fail=0
+          for i in $(seq 1 60); do
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              echo "server-smoke: el proceso uvicorn murió durante el arranque"
+              exit 1
+            fi
+            if curl -fsS http://127.0.0.1:8421/healthz >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8421/healthz)
+          echo "GET /healthz -> $code"
+          [ "$code" = "200" ] || fail=1
+          body=$(curl -fsS http://127.0.0.1:8421/model/version) || { echo "GET /model/version falló"; fail=1; body='{}'; }
+          echo "GET /model/version -> $body"
+          read -r version quantization <<< "$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(d.get("version",""), d.get("quantization",""))' "$body")"
+          echo "version=$version quantization=$quantization"
+          if [ "$version" != "1.0.0" ] || [ "$quantization" != "float16" ]; then
+            echo "server-smoke: /model/version inesperado (esperado 1.0.0/float16)"
+            fail=1
+          fi
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8421/model/latest)
+          echo "GET /model/latest (sin token) -> $code"
+          [ "$code" = "401" ] || fail=1
+          exit "$fail"
+
+  android:
+    name: Android (unit tests + assembleDebug)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+      # ubuntu-latest trae SDK de Android; esto solo asegura los componentes que exige build.gradle.kts
+      - name: Install Android SDK components (android-35, build-tools 35.0.0)
+        shell: bash
+        run: |
+          set -u
+          SDKMANAGER=sdkmanager
+          command -v sdkmanager >/dev/null 2>&1 || SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
+      # Stub de entorno para el runner: build.gradle.kts evalúa RELEASE_* en tiempo de
+      # configuración (error si faltan) aunque no se firme ni se genere el release.
+      # Valores de relleno, nunca se commitea (gitignored).
+      - name: Stub android/local.properties (RELEASE_* solo para configurar)
+        shell: bash
+        run: |
+          printf 'APP_API_KEY=\nRELEASE_STORE_PASSWORD=ci-dummy\nRELEASE_KEY_ALIAS=ci-dummy\nRELEASE_KEY_PASSWORD=ci-dummy\n' > local.properties
+      - name: Unit tests (JVM) + assembleDebug
+        run: ./gradlew :app:testDebugUnitTest :app:assembleDebug
+
+  guard-paths:
+    name: Guard local paths (git grep)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      # Auditoría extrínseca de lo rastreado: rutas locales de la máquina o referencias
+      # a carpetas/repos ajenos. Falla (exit 1) si encuentra coincidencias, pasa (exit 0)
+      # si no. Notas de adaptación sobre el set literal:
+      #  - 'TESIS/' va case-sensitive: con -i casaría los 'pipeline/tesis/' internos, legítimos.
+      #  - 'colab' excluye los archivos que documentan legítimamente ese entorno
+      #    (README, model/pyproject.toml, model/train_bcn.py, uv.lock con el extra 'colab').
+      #  - DATA_CRUDA/ y TESIS/ del propio .gitignore son reglas de exclusión, no fugas.
+      - name: Extrinsic audit of tracked files
+        shell: bash
+        run: |
+          set -u
+          fail=0
+          # scan <label> <i|-> <pattern> [excluidas...]
+          scan() {
+            local label="$1" case_flag="$2" pattern="$3"; shift 3
+            local excludes=() f out rc
+            for f in "$@"; do excludes+=(":!$f"); done
+            if [ "$case_flag" = "i" ]; then
+              out=$(git grep -niE "$pattern" -- . "${excludes[@]}" 2>&1)
+            else
+              out=$(git grep -nE "$pattern" -- . "${excludes[@]}" 2>&1)
+            fi
+            rc=$?
+            if [ $rc -gt 1 ]; then
+              echo "guard-paths: error ejecutando git grep en '$label': $out"
+              exit 2
+            fi
+            if [ $rc -eq 0 ]; then
+              echo "guard-paths: HITS en '$label':"
+              printf '%s\n' "$out"
+              fail=1
+            fi
+          }
+          scan "rutas locales de la máquina" i '/home/|Escritorio|resultados/|APP_DERMICA_DOCS|parents\['
+          scan "carpetas de datos externos"    - 'DATA_CRUDA|TESIS/' .gitignore
+          scan "token de entorno colab"        i 'colab' README.md model/pyproject.toml model/train_bcn.py uv.lock
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::guard-paths: referencias locales/externas rastreadas; usa rutas relativas, variables de entorno o contenido publicado"
+            exit 1
+          fi
+          echo "guard-paths: OK (0 coincidencias)"
