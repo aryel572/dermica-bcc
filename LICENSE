@@ -1,0 +1,19 @@
+MIT License
+
+Copyright (c) 2026 Aryel Orlando A.M. & contribuidores APP_DERMICA
+
+Se permite, de manera gratuita, la obtención de una copia de este software y los archivos de documentación asociados (el "Software"), para usar, copiar, modificar, fusionar, publicar, distribuir, otorgar sublicencias y/o vender copias del Software, y para permitir a las personas a quienes se les proporcione el Software hacer lo anterior, sujeto a las siguientes condiciones:
+
+El aviso de copyright anterior y este aviso de permiso se incluirán en todas las copias o partes sustanciales del Software.
+
+EL SOFTWARE SE PROPORCIONA "TAL CUAL", SIN GARANTÍA DE NINGÚN TIPO, EXPRESA O IMPLÍCITA, INCLUYENDO PERO SIN LIMITARSE A LAS GARANTÍAS DE COMERCIABILIDAD, IDONEIDAD PARA UN PROPÓSITO PARTICULAR Y AUSENCIA DE INFRACCIÓN. EN NINGÚN CASO LOS AUTORES O TITULARES DE COPYRIGHT SERÁN RESPONSABLES POR CUALQUIER RECLAMACIÓN, DAÑOS U OTRAS OBLIGACIONES, YA SEA COMO ORIGEN DE UN CONTRATO, AGRAVIO O ACTO DE RESPONSABILIDAD, YA SEA DENTRO DE LA LEY O FUERA DE ELLA, O DE CUALQUIER OTRO MEDIO.
+
+---
+
+## Nota sobre datos y materiales de terceros
+
+**El código de este repositorio está licenciado bajo MIT (arriba). Los DATOS no.**
+
+- El dataset **ISIC 2019** es propiedad de sus titulares (ISIC Archive / HAM10000 / BCN20000 / MSK) y está licenciado bajo **CC BY-NC 4.0**: uso **no comercial** con citación obligatoria. Este repositorio **no redistribuye imágenes** de ISIC 2019; los manifiestos y la configuración derivados se publican con atribución en `BACKEND/data_pipeline/manifests/DATASET_CARD.md`.
+- El modelo entrenado y su artefacto `.tflite` son derivados de ISIC 2019 bajo las mismas restricciones de uso no comercial; su distribución se limita a la app de investigación del proyecto y a los canales oficiales del mismo.
+- Cualquier uso del modelo o de los manifiestos fuera de la investigación académica debe verificar la compatibilidad con CC BY-NC 4.0.
