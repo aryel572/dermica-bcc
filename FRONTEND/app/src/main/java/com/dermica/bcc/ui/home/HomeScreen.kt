@@ -3,8 +3,13 @@ package com.dermica.bcc.ui.home
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,6 +35,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -56,11 +65,32 @@ fun HomeScreen(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    // Fix review-corroborated R4-PICKER-MAIN-IO: antes la lectura ocurría en el hilo
+    // principal, sin try/catch; un stream roto crasheaba el Activity y un stream nulo
+    // producía el no-op silencioso "elegí imagen y no pasa nada".
+    var pickerError by mutableStateOf<String?>(null)
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri ?: return@rememberLauncherForActivityResult
-        // Lectura síncrona corta del contentResolver: bytes de una sola imagen.
-        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-        if (bytes != null) onImageBytesChosen(bytes, displayNameOf(context, uri))
+        pickerError = null
+        scope.launch {
+            // Lectura y metadatos fuera del hilo principal (R4-PICKER-MAIN-IO).
+            val loaded = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openInputStream(uri)?.use { it.readBytes() } to displayNameOf(context, uri)
+                }.getOrElse { error ->
+                    Log.w(TAG, "fallo leyendo la imagen del picker: ${error.message}")
+                    null to null
+                }
+            }
+            val bytes = loaded.first
+            if (bytes == null) {
+                // Stream nulo o proveedor roto: mensaje visible, nunca crash ni silencio.
+                pickerError = "No se pudo leer la imagen. Intenta con otra."
+                return@launch
+            }
+            onImageBytesChosen(bytes, loaded.second)
+        }
     }
     val modelReady = modelState == ModelState.READY
 
@@ -100,7 +130,7 @@ fun HomeScreen(
                 supportingText = modelLoadError ?: (if (modelReady) null else modeloNoDisponibleTexto(modelState)),
             )
 
-            // Acción principal 2: subconjunto → placeholder (T4 lo reemplaza entero).
+            // Acción principal 2: subconjunto (T4 lo implementa; el VM falla honesto si LiteRT no inicializa).
             ActionCard(
                 title = "Subir subconjunto",
                 description = "Carpeta con las imágenes dermatoscópicas del subconjunto y su referencia.",
@@ -120,9 +150,16 @@ fun HomeScreen(
                     Text(text = "Procesando imagen…", style = MaterialTheme.typography.bodyMedium)
                 }
             }
-            predictionError?.let {
+            predictionError?.let { errorMessage ->
                 Text(
-                    text = it,
+                    text = errorMessage,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            pickerError?.let { errorMessage ->
+                Text(
+                    text = errorMessage,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                 )
@@ -228,3 +265,5 @@ private fun displayNameOf(context: Context, uri: Uri): String? =
     context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
         if (cursor.moveToFirst()) cursor.getString(0)?.takeIf { it.isNotBlank() } else null
     } ?: uri.lastPathSegment
+
+private const val TAG = "HomeScreen"
