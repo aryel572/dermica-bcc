@@ -17,6 +17,12 @@ import java.util.Locale
  * Restricción de plataforma: SAF (ACTION_OPEN_DOCUMENT_TREE) permite elegir UNA
  * carpeta por intent, por eso el caso "padre con N subcarpetas" se resuelve con
  * este escaneo en vez de un multi-picker.
+ *
+ * Quién lo consume: `prepareAndRun` (ui/subset/SubsetScreen.kt), único caller;
+ * éste deriva el TreeResolution al ViewModel (startRun / startMultiRun / fail).
+ * Alcance: `internal` de :app — la decisión vive en core (JVM-testeable), aquí
+ * sólo DocumentFile y contentResolver. Las imágenes viajan como URI; jamás se
+ * copian a disco fuera del árbol.
  */
 internal sealed interface TreeResolution {
     /** Raíz CON ground_truth.json → flujo T4 intacto (una sola carpeta). */
@@ -41,6 +47,13 @@ internal sealed interface TreeResolution {
  *   ya leídos (JSON ilegible viaja como null: esa subcarpeta se reporta fallida
  *   y el lote continúa).
  * - Cualquier otra cosa → [TreeResolution.Fail] con mensaje honesto (S5-multi).
+ *
+ * Trabajo síncrono y barato (lista y lecturas pequeñas, nunca copia imágenes):
+ * por eso se llama en el hilo del picker sin scope propio.
+ *
+ * @param context contexto de la Activity (DocumentFile + contentResolver).
+ * @param treeUri URI del árbol devuelto por OpenDocumentTree.
+ * @return plan tipado para el caller: qué flujo corre, con qué imágenes/JSON ya leídos.
  */
 internal fun resolveTree(context: Context, treeUri: Uri): TreeResolution {
     val root = DocumentFile.fromTreeUri(context, treeUri)
@@ -102,7 +115,13 @@ internal fun resolveTree(context: Context, treeUri: Uri): TreeResolution {
     }
 }
 
-/** Imágenes compatibles de un listado de hijos, ordenadas por nombre (orden estable). */
+/**
+ * Imágenes compatibles de un listado de hijos, ordenadas por nombre
+ * (orden estable, mismo criterio case-insensitive que SubsetScanner).
+ *
+ * @param children hijos directos (RAÍZ o subcarpeta) ya resueltos por DocumentFile.
+ * @return lista ordenada; vacía si no hay .jpg/.jpeg/.png legibles por nombre.
+ */
 private fun imageChildren(children: Array<DocumentFile>): List<SubsetImage> =
     children
         .filter { it.isFile }
@@ -112,7 +131,15 @@ private fun imageChildren(children: Array<DocumentFile>): List<SubsetImage> =
         }
         .sortedBy { it.name.lowercase(Locale.ROOT) }
 
-/** Lee el contenido de un documento como texto UTF-8; null ante cualquier fallo (S3 tolerante). */
+/**
+ * Lee el contenido de un documento como texto UTF-8; null ante cualquier fallo
+ * (S3 tolerante). Nunca lanza: el caller decide reportar la subcarpeta fallida
+ * o abortar la carpeta única.
+ *
+ * @param context contexto de la Activity (contentResolver).
+ * @param uri URI del documento (ground_truth.json) elegido con SAF.
+ * @return texto UTF-8 o null si falla la lectura/decodificación.
+ */
 private fun readText(context: Context, uri: Uri): String? = try {
     context.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
 } catch (error: Exception) {

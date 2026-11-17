@@ -7,29 +7,63 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
-/** Endpoint base del backend FastAPI (Render free, S8). HTTPS siempre (S10). */
+/**
+ * Endpoint base del backend FastAPI (Render free, S8). HTTPS siempre (S10).
+ *
+ * Origen: URL pública del servicio Render del proyecto; la sirve SettingsViewModel
+ * a ModelRelease. Nunca lleva credenciales: el Bearer viaja por cabecera por petición.
+ */
 const val RELEASE_BASE_URL = "https://dermica-api.onrender.com"
 
-/** Versión del modelo publicado en assets y en el último release (1.0.0). */
+/**
+ * Versión del modelo publicado en assets y en el último release (1.0.0).
+ *
+ * Origen: contrato de release 1.0.0 (float16); la usa SettingsViewModel como
+ * `localVersion` en ModelRelease.decide para decidir si hay algo que descargar.
+ */
 const val LOCAL_MODEL_VERSION = "1.0.0"
 
-/** Resultado mínimo de una petición GET: código HTTP y cuerpo como texto. */
+/**
+ * Resultado mínimo de una petición GET: código HTTP y cuerpo como texto.
+ *
+ * @param code — Int: código HTTP devuelto por el servidor (p.ej. 200, 401).
+ * @param body — String: cuerpo en UTF-8, posiblemente vacío; nunca null.
+ *
+ * Lo produce HttpGateway.get (UrlHttpGateway en producción, fake en tests).
+ */
 data class GatewayResponse(val code: Int, val body: String)
 
 /**
  * Puerta HTTP inyectable para que el flujo de release sea testeable en JVM sin red.
- * La implementación real ([UrlHttpGateway]) usa HttpURLConnection; las pruebas
- * usan un fake con respuestas guionizadas.
+ *
+ * Lugar en el flujo: red (data/net). La consume ModelRelease (única cliente del
+ * contrato) y la implementan UrlHttpGateway (producción) y los fakes de
+ * ModelReleaseTest (JVM).
  */
 interface HttpGateway {
 
-    /** GET sencillo; devuelve código y cuerpo. Lanza IOException ante fallo de red/timeout. */
+    /**
+     * GET sencillo; devuelve código y cuerpo. Lanza IOException ante fallo de red/timeout.
+     *
+     * @param url — String: URL completa (sin credenciales embebidas).
+     * @param bearer — String?: token Bearer opcional (null en /model/version público).
+     * @return GatewayResponse con código y cuerpo; el llamador decide qué códigos acepta.
+     * @throws java.io.IOException ante fallo de red/timeout/DNS (ModelRelease lo traduce a ReleaseException).
+     */
     fun get(url: String, bearer: String?): GatewayResponse
 
     /**
      * GET con volcado a archivo (stream). [onProgress] recibe bytes leídos y el
      * total declarado por el servidor (null si no lo envía). Devuelve el código HTTP;
      * con código != 200 no debe quedar archivo útil (el temporal se borra).
+     *
+     * @param url — String: URL del artefacto (típicamente /model/download).
+     * @param bearer — String?: token Bearer obligatorio (el endpoint exige auth).
+     * @param destFile — File: destino temporal (mismo filesystem que el modelo interno).
+     * @param onProgress — (bytesRead: Long, totalBytes: Long?) -> Unit: progreso
+     *        para la UI; totalBytes null cuando el servidor responde chunked.
+     * @return Int: código HTTP de la respuesta (200 en éxito).
+     * @throws java.io.IOException ante fallo de red a mitad del stream (el temporal queda parcial; el llamador lo borra).
      */
     fun downloadToFile(
         url: String,
@@ -47,12 +81,19 @@ private inline fun <T> ioUnlessNoConnection(block: () -> T): T = try {
     throw ReleaseException(ReleaseErrorKind.NO_CONNECTION, "Sin conexión con el servidor. Revisa tu red e inténtalo de nuevo.")
 }
 
-/** Cliente real: HttpURLConnection pelado (sin OkHttp/Retrofit, S8 mínimo). */
+/**
+ * Cliente real: HttpURLConnection pelado (sin OkHttp/Retrofit, S8 mínimo).
+ *
+ * Lugar en el flujo: red (data/net), implementación de [HttpGateway] para
+ * producción. ModelRelease solo conoce la interfaz; las pruebas inyectan un fake.
+ */
 class UrlHttpGateway : HttpGateway {
 
-    // Timeout de conexión 10 s; lectura 60 s: Render free tarda 30–60 s en el
-    // arranque en frío y acortar la lectura cortaría descargas/respuestas válidas.
+    // Timeout de conexión 10 s: margen amplio para DNS+TCP+TLS sin colgar la UI.
     private val connectTimeoutMs = 10_000
+
+    // Timeout de lectura 60 s: Render free tarda 30–60 s en el arranque en frío
+    // y acortar la lectura cortaría descargas/respuestas válidas.
     private val readTimeoutMs = 60_000
 
     // El cuerpo de /model/latest es un JSON pequeño; se acota la lectura por defensa.
@@ -117,7 +158,20 @@ class UrlHttpGateway : HttpGateway {
     }
 }
 
-/** Metadatos del release publicados en /model/latest (campos del metrics JSON). */
+/**
+ * Metadatos del release publicados en /model/latest (campos del metrics JSON).
+ *
+ * Lugar en el flujo: red (data/net). Lo produce ModelRelease.parseReleaseInfo y
+ * lo consume SettingsViewModel (decide descarga y verificación) y
+ * ModelRelease.downloadModel (tamaño/SHA esperados). Los campos float16* son
+ * opcionales: el backend real publica `tag` + métricas sin ellos.
+ *
+ * @param version — String: versión del release (o `tag` del backend), normalizada en el parseo.
+ * @param quantization — String?: p.ej. "float16"; null si el backend no la publica.
+ * @param auprc — Double?: AUPRC reportada en validación; null si no está publicada.
+ * @param float16SizeBytes — Long?: tamaño exacto del artefacto float16; null si no se publica.
+ * @param float16Sha256 — String?: SHA-256 del artefacto float16; null si no se publica.
+ */
 data class ReleaseInfo(
     val version: String,
     val quantization: String?,
@@ -126,7 +180,12 @@ data class ReleaseInfo(
     val float16Sha256: String?,
 )
 
-/** Tipos de fallo del flujo de release; la UI los mapea a mensajes legibles. */
+/**
+ * Tipos de fallo del flujo de release; la UI los mapea a mensajes legibles.
+ *
+ * Lugar en el flujo: red (data/net). Los produce ModelRelease y los consume
+ * SettingsViewModel/SettingsScreen para pintar el error correspondiente.
+ */
 enum class ReleaseErrorKind {
     /** Red/timeout/DNS: no se pudo hablar con el servidor. */
     NO_CONNECTION,
@@ -147,6 +206,10 @@ enum class ReleaseErrorKind {
 /**
  * Error del flujo de release con un mensaje listo para mostrar (español, sin
  * secretos ni trazas internas) y el código HTTP cuando aplica.
+ *
+ * @param kind — ReleaseErrorKind: categoría del fallo (la UI mapea a texto/acción).
+ * @param message — String: mensaje accionable en español; nunca contiene el Bearer.
+ * @param httpCode — Int?: código HTTP si el fallo vino de una respuesta HTTP.
  */
 class ReleaseException(
     val kind: ReleaseErrorKind,
@@ -154,7 +217,12 @@ class ReleaseException(
     val httpCode: Int? = null,
 ) : Exception(message)
 
-/** Decisión del paso 3 (S8): descargar o no. */
+/**
+ * Decisión del paso 3 (S8): descargar o no.
+ *
+ * @property DOWNLOAD hay un release más nuevo (o no hay modelo instalado).
+ * @property UP_TO_DATE el modelo local ya está al día; no se toca nada.
+ */
 enum class UpdateDecision {
     DOWNLOAD,
     UP_TO_DATE,
@@ -163,16 +231,26 @@ enum class UpdateDecision {
 /**
  * Flujo de descarga/actualización del modelo contra el backend (S8).
  *
- * Extraído de la UI para ser testeable en JVM: toda la lógica
- * (parseo, decisión, verificación) vive aquí y [HttpGateway] se inyecta.
+ * Lugar en el flujo: red (data/net). Lo consume ui/settings/SettingsViewModel
+ * (checkForUpdateOrDownload) y lo cubre ModelReleaseTest en JVM con un
+ * HttpGateway guionizado. Extraído de la UI para ser testeable en JVM: toda la
+ * lógica (parseo, decisión, verificación) vive aquí y [HttpGateway] se inyecta.
+ *
  * La instalación atómica (tmp → filesDir/model.tflite) y el estado del
  * ModelManager son responsabilidad de `ModelManager.installDownloadedModel`.
+ *
+ * @param gateway — HttpGateway: puerta HTTP; por defecto UrlHttpGateway (producción);
+ *        las pruebas inyectan un fake con respuestas guionizadas.
  */
 class ModelRelease(private val gateway: HttpGateway = UrlHttpGateway()) {
 
     /**
-     * Paso 1 (S8): ping público a /model/version. Falla con [ReleaseException]
-     * tipo NO_CONNECTION o SERVER_ERROR si el servidor no responde 200.
+     * Paso 1 (S8): ping público a /model/version.
+     *
+     * @throws ReleaseException NO_CONNECTION si la red falla/timeout; SERVER_ERROR
+     *         si el servidor no responde 200.
+     *
+     * Efectos: ninguno en la app; solo constata que el servicio está vivo.
      */
     fun checkServer() {
         val response = ioUnlessNoConnection { gateway.get("$RELEASE_BASE_URL/model/version", bearer = null) }
@@ -190,6 +268,12 @@ class ModelRelease(private val gateway: HttpGateway = UrlHttpGateway()) {
      * Paso 2 (S8): GET /model/latest con Bearer. Devuelve los metadatos del release.
      * El cuerpo real del backend trae `tag` + métricas (sin campos float16); el
      * parser acepta `version` o `tag` y los campos float16 como opcionales.
+     *
+     * @param apiKey — String: APP_API_KEY configurada; viaja solo como cabecera
+     *        Authorization Bearer, nunca se registra ni se incluye en mensajes.
+     * @return ReleaseInfo con los metadatos del release ya parseados.
+     * @throws ReleaseException NO_CONNECTION (red/timeout), UNAUTHORIZED (401/403),
+     *         SERVER_ERROR (otro código) o BAD_RESPONSE (cuerpo no parseable/sin versión).
      */
     fun fetchLatest(apiKey: String): ReleaseInfo {
         val response = ioUnlessNoConnection { gateway.get("$RELEASE_BASE_URL/model/latest", apiKey) }
@@ -213,8 +297,18 @@ class ModelRelease(private val gateway: HttpGateway = UrlHttpGateway()) {
      * de tamaño y SHA-256. Si la verificación falla borra el temporal y lanza
      * [ReleaseException] tipo VERIFICATION_FAILED: el modelo actual no se toca.
      *
-     * @param expectedSha256 SHA publicado en /model/latest; si el release no lo
+     * @param apiKey — String: APP_API_KEY configurada; viaja solo como cabecera.
+     * @param info — ReleaseInfo: metadatos de fetchLatest; se usan tamaño y SHA esperados.
+     * @param expectedSha256 — String: SHA publicado en /model/latest; si el release no lo
      *   trae, el llamador pasa la constante EXPECTED_SHA256 del asset base.
+     * @param destFile — File: destino temporal (normalmente ModelManager.downloadTemporaryFile()).
+     * @param onProgress — (bytesRead: Long, totalBytes: Long?) -> Unit: progreso para la UI.
+     * @throws ReleaseException NO_CONNECTION, UNAUTHORIZED, SERVER_ERROR o
+     *         VERIFICATION_FAILED. Si la verificación falla borra el temporal: el
+     *         modelo actual no se toca.
+     *
+     * Efectos colaterales: escribe destFile y lo borra en cualquier fallo; nunca
+     * instala ni toca el modelo interno (eso es trabajo de ModelManager).
      */
     fun downloadModel(
         apiKey: String,
@@ -276,7 +370,14 @@ class ModelRelease(private val gateway: HttpGateway = UrlHttpGateway()) {
 
     companion object {
 
-        /** Paso 2 (parseo): extrae los metadatos del JSON de /model/latest. */
+        /**
+         * Paso 2 (parseo): extrae los metadatos del JSON de /model/latest.
+         *
+         * @param json — String: cuerpo íntegro de la respuesta 200 de /model/latest.
+         * @return ReleaseInfo: metadatos normalizados (versión nunca vacía).
+         * @throws ReleaseException BAD_RESPONSE si el JSON no es un objeto, no trae
+         *         versión/tag usable, o la versión no es parseable.
+         */
         fun parseReleaseInfo(json: String): ReleaseInfo {
             val obj = try {
                 JSONObject(json)
@@ -307,6 +408,10 @@ class ModelRelease(private val gateway: HttpGateway = UrlHttpGateway()) {
          * o si la versión remota es estrictamente mayor que la local; en cualquier
          * otro caso no toca nada ("Ya tienes la última versión").
          *
+         * @param remoteVersion — String: versión publicada por /model/latest.
+         * @param localVersion — String: LOCAL_MODEL_VERSION o la instalada.
+         * @param modelPresent — Boolean: true si hay un modelo interno disponible.
+         * @return UpdateDecision: DOWNLOAD o UP_TO_DATE.
          * @throws ReleaseException BAD_RESPONSE si la versión remota no es X.Y.Z
          *   con partes numéricas (no se improvisa una comparación de strings).
          */
@@ -319,7 +424,14 @@ class ModelRelease(private val gateway: HttpGateway = UrlHttpGateway()) {
             }
         }
 
-        /** Comparación semver estricta sobre partes numéricas (1.10.0 > 1.9.0). */
+        /**
+         * Comparación semver estricta sobre partes numéricas (1.10.0 > 1.9.0).
+         *
+         * @param a — String: versión candidata, partes numéricas separadas por '.'.
+         * @param b — String: versión contra la que comparar.
+         * @return Int: >0 si a>b, 0 si son equivalentes, <0 si a<b.
+         * @throws ReleaseException BAD_RESPONSE si alguna parte no es numérica.
+         */
         fun compareVersions(a: String, b: String): Int {
             val partsA = a.split('.').map { it.toLongOrNull() }
             val partsB = b.split('.').map { it.toLongOrNull() }

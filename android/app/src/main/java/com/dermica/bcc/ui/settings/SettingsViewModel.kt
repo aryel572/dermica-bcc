@@ -22,6 +22,10 @@ import java.io.File
  * Estado del flujo «Buscar actualización» / «Descargar modelo» (S8).
  * Una sola fuente de verdad para la UI; nunca hay estados paralelos.
  *
+ * Quien lo consume: SettingsScreen (vía SettingsViewModel.releaseState) y
+ * DownloadProgress (que pinta cada rama). Ninguna otra pantalla lo observa.
+ *
+ * - [Idle]: sin trabajo en curso; el botón muestra su label base.
  * - [Checking] cubre el ping público y /model/latest; en Render free el arranque
  *   en frío puede tardar 30–60 s (la UI muestra un aviso honesto).
  * - [Downloading] reporta bytes leídos y el total si el servidor lo declara.
@@ -30,15 +34,29 @@ import java.io.File
 sealed interface ReleaseUiState {
     data object Idle : ReleaseUiState
     data object Checking : ReleaseUiState
+    /** @param bytesRead bytes consumidos hasta ahora; @param totalBytes Content-Length o null si vino chunked. */
     data class Downloading(val bytesRead: Long, val totalBytes: Long?) : ReleaseUiState
+    /** @param version versión instalada y verificada (digest SHA-256 con [ModelManager.EXPECTED_SHA256] o el del release). */
     data class Success(val version: String) : ReleaseUiState
     data object UpToDate : ReleaseUiState
+    /** @param message texto ya redactado en español, sin detalles internos ni claves. */
     data class Error(val message: String) : ReleaseUiState
 }
 
-/** Resultado intermedio del trabajo en Dispatchers.IO (no sale del VM). */
+/**
+ * Resultado intermedio del trabajo en Dispatchers.IO (no sale del VM).
+ * Canal tipado entre el withContext de red/descarga y el when del hilo de UI;
+ * permite instalar vs. reportar "ya tienes la última" sin excepciones de control.
+ */
 private sealed interface DownloadOutcome
+
+/** El release remoto no supera a [LOCAL_MODEL_VERSION] (o no hace falta reinstalar). */
 private data object UpToDate : DownloadOutcome
+
+/**
+ * Descarga completada en tmpFile con sha256 esperado; la instalación la decide
+ * el hilo de UI vía ModelManager.installDownloadedModel (verificación + rename).
+ */
 private data class Downloaded(val version: String, val expectedSha256: String, val tmpFile: File) : DownloadOutcome
 
 /**
@@ -49,6 +67,19 @@ private data class Downloaded(val version: String, val expectedSha256: String, v
  * - Ejecutar el flujo S8: ping → metadata → decisión → descarga con verificación
  *   → instalación atómica vía [ModelManager.installDownloadedModel].
  * - Traducir los fallos a mensajes legibles en español sin exponer la APP_API_KEY.
+ *
+ * Quién lo consume: SettingsScreen (creado acotado a la pantalla por AppRoot);
+ * AppRoot solo lo cuelga de la ruta SETTINGS. Quien dispara el flujo: el botón
+ * «Descargar/Buscar actualización» → [checkForUpdateOrDownload]; el botón
+ * «Eliminar modelo» → [deleteModel].
+ *
+ * Coroutine: todo el trabajo pesado corre en [viewModelScope] (se cancela con la
+ * pantalla); la red ocurre en Dispatchers.IO dentro de ese scope; la StateFlow
+ * [releaseState] es la única salida hacia la UI.
+ *
+ * @param modelManager gestor del modelo local (estado, borrado, archivos tmp, instalación).
+ * @param release cliente del backend (ping/metadata/descarga); inyectable solo para test.
+ * @param apiKey APP_API_KEY del BuildConfig; vacío = CTA deshabilitada (nunca se loguea).
  */
 class SettingsViewModel(
     private val modelManager: ModelManager,
@@ -60,7 +91,10 @@ class SettingsViewModel(
     val isApiKeyConfigured: Boolean = apiKey.isNotBlank()
     private val appApiKey = apiKey
 
+    /** Estado privado mutable de [releaseState]; la UI jamás lo toca (asStateFlow). */
     private val _releaseState = MutableStateFlow<ReleaseUiState>(ReleaseUiState.Idle)
+
+    /** Salida pública hacia la UI: fase actual del flujo S8. Consumidor: SettingsScreen/DownloadProgress. */
     val releaseState: StateFlow<ReleaseUiState> = _releaseState.asStateFlow()
 
     /** Borra la copia interna del modelo y persiste el flag de borrado (S7). */
@@ -71,6 +105,10 @@ class SettingsViewModel(
     /**
      * Flujo S8 completo (ping → metadata → decisión → descarga → instalación).
      * Idempotente: ignora re-entradas mientras hay un trabajo en curso.
+     *
+     * Corre en [viewModelScope]: la red en Dispatchers.IO, la instalación en el
+     * hilo del scope; la cancelación (p.ej. salir de Configuración) aborta
+     * limpiamente y la CancellationException se propaga siempre (nunca se traga).
      */
     fun checkForUpdateOrDownload() {
         val current = _releaseState.value
@@ -125,4 +163,6 @@ class SettingsViewModel(
     }
 }
 
+// Etiqueta de Logcat del archivo; solo tipos de fallo y mensajes sin claves.
+// Consumida por Log.w/Log.e dentro del catch (ReleaseException/Exception).
 private const val TAG = "SettingsViewModel"

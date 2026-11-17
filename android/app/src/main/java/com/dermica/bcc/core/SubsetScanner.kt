@@ -22,20 +22,42 @@ import java.util.Locale
  *   un fallo silencioso ni un lote inventado).
  * - Nombres null o en blanco se descartan: un DocumentFile sin nombre no puede
  *   recibir etiqueta en el historial.
+ *
+ * Consumidores: el adapter Android (`resolveTree` en ui/subset) lo invoca tras
+ * pre-resolver los hijos del árbol elegido; los tests JVM lo ejercitan directo con
+ * [TreeChild] falsos. La UI jamás decide nada aquí: el flujo de datos es
+ * árbol SAF → adapter → [decide] → [TreeScanResult] → SubsetViewModel.
  */
 object SubsetScanner {
 
-    /** Nombre exacto del ground truth dentro de una carpeta de subconjunto (S3). */
+    /**
+     * Nombre exacto del ground truth dentro de una carpeta de subconjunto (S3).
+     * Origen: contrato del dataset del proyecto; consumen el adapter (raíz y
+     * subcarpetas) y [decide] para distinguir carpeta T4 de carpeta padre S5-multi.
+     */
     const val GROUND_TRUTH_FILE_NAME = "ground_truth.json"
 
+    // Extensiones aceptadas por toda la app (imágenes dermatoscópicas comunes).
+    // Única fuente: el pipeline prepara el mismo set; consumen isImageName, el
+    // adapter (imagenChildren), el filtro de la RAÍZ y los mensajes de error.
     private val IMAGE_EXTENSIONS = listOf(".jpg", ".jpeg", ".png")
 
-    /** true si [name] termina en una extensión de imagen compatible (case-insensitive). */
+    /**
+     * Determina si [name] termina en una extensión de imagen compatible.
+     *
+     * @param name nombre tal cual lo reporta SAF (DocumentFile.name); null no llega aquí.
+     * @return true si es .jpg/.jpeg/.png en cualquier capitalización.
+     */
     fun isImageName(name: String): Boolean =
         IMAGE_EXTENSIONS.any { name.lowercase(Locale.ROOT).endsWith(it) }
 
     /**
      * Decide el flujo del árbol a partir de sus hijos de primer nivel.
+     *
+     * Orden del resultado: las subcarpetas elegibles salen ordenadas por nombre
+     * (`lowercase(Locale.ROOT)`) para que el lote y el historial sigan el mismo
+     * orden estable en cualquier dispositivo, coincidiendo con el orden de las
+     * imágenes del adapter.
      *
      * @param children hijos directos del árbol elegido, ya inspeccionados por el adapter.
      * @return [TreeScanResult.SingleSubset] si la raíz trae ground_truth.json;
@@ -72,6 +94,14 @@ object SubsetScanner {
  * Hijo de un directorio SAF, pre-resuelto a datos puros por el adapter Android
  * (o por un fake en tests). Los flags de contenido directo sólo aplican a
  * directorios; para archivos quedan en false.
+ *
+ * Es el contrato entre el adapter (que sí toca DocumentFile) y el scanner (que
+ * no puede, para seguir siendo testeable en JVM).
+ *
+ * @param name nombre tal cual lo da SAF; null o en blanco equivale a descartable.
+ * @param isDirectory true si el hijo es carpeta.
+ * @param hasGroundTruth sólo directorios: contiene ground_truth.json directamente en su interior.
+ * @param hasImages sólo directorios: contiene al menos una imagen .jpg/.jpeg/.png.
  */
 data class TreeChild(
     val name: String?,
@@ -95,7 +125,10 @@ data class SubfolderCandidate(
     val eligible: Boolean get() = hasGroundTruth && hasImages
 }
 
-/** Resultado del escaneo del árbol (S5-multi). */
+/**
+ * Resultado del escaneo del árbol (S5-multi). Lo consume `prepareAndRun`
+ * (ui/subset/SubsetScreen.kt) para derivar a flujo T4, lote multi o error honesto.
+ */
 sealed interface TreeScanResult {
     /** ground_truth.json en la raíz → flujo T4 (una sola carpeta, como hoy). */
     data object SingleSubset : TreeScanResult

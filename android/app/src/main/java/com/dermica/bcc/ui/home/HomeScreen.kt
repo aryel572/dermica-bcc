@@ -54,6 +54,24 @@ import com.dermica.bcc.data.model.ModelState
  *
  * Diseño state hoisting: la pantalla recibe el estado del modelo y los callbacks;
  * la corrida de la predicción la decide el owner (AppRoot), no la UI.
+ *
+ * Invocada por AppRoot en AppRoute.HOME (y como fallback del RESULT sin payload).
+ * Datos: `modelState` llega desde ModelManager.state (StateFlow) vía
+ * collectAsStateWithLifecycle en AppRoot. Callbacks hacia arriba: imagen elegida
+ * (AppRoot ejecuta la predicción), abrir subconjunto y abrir Configuración.
+ *
+ * Coroutine: el único scope propio es `scope` (rememberCoroutineScope), usado
+ * para leer la imagen del picker fuera del hilo principal (R4); las predicciones
+ * NO se lanzan aquí.
+ *
+ * @param modelState estado del modelo (READY habilita «Imagen única»; NO_MODEL/FAILED muestran la CTA de descarga).
+ * @param predicting true mientras AppRoot está inferiendo; deshabilita la CTA y muestra progreso.
+ * @param predictionError mensaje de error de la última predicción; null = sin error.
+ * @param modelLoadError fallo de construcción del motor (R3-001); deshabilita la CTA y muestra el motivo.
+ * @param onImageBytesChosen recibe (bytes, nombreVisible?) ya leídos y fuera del main thread.
+ * @param onOpenSubset navega a la ruta SUBSET (SubsetScreen).
+ * @param onOpenSettings navega a la ruta SETTINGS (S7: la descarga vive en Configuración).
+ * @param modifier slot de layout para el Surface raíz.
  */
 @Composable
 fun HomeScreen(
@@ -69,6 +87,8 @@ fun HomeScreen(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    // Scope de composición para la lectura del picker (IO). Las predicciones se
+    // lanzan en AppRoot, no aquí.
     val scope = rememberCoroutineScope()
     // Fix review-corroborated R4-PICKER-MAIN-IO: antes la lectura ocurría en el hilo
     // principal, sin try/catch; un stream roto crasheaba el Activity y un stream nulo
@@ -180,7 +200,7 @@ fun HomeScreen(
     }
 }
 
-/** Aviso fijo de tamizaje (S1/S7): siempre visible, nunca dismissible. */
+/** Aviso fijo de tamizaje (S1/S7): siempre visible, nunca dismissible. Invocada por HomeScreen. */
 @Composable
 private fun MedicalDisclaimer() {
     Surface(
@@ -206,7 +226,10 @@ private fun MedicalDisclaimer() {
     }
 }
 
-/** Estado del modelo siempre visible y coherente (StateFlow de ModelManager, S1). */
+/**
+ * Estado del modelo siempre visible y coherente (StateFlow de ModelManager, S1).
+ * Invocada por HomeScreen; no lee ModelState por su cuenta: pinta lo que recibe.
+ */
 @Composable
 private fun ModelStatusRow(modelState: ModelState) {
     val (label, tint) = when (modelState) {
@@ -225,7 +248,11 @@ private fun ModelStatusRow(modelState: ModelState) {
     }
 }
 
-/** Texto honesto cuando la inferencia no es posible todavía (T5: la descarga vive en Configuración). */
+/**
+ * Texto honesto cuando la inferencia no es posible todavía (T5: la descarga
+ * vive en Configuración). Consumidor único: el supportingText de la card
+ * «Imagen única» en HomeScreen.
+ */
 private fun modeloNoDisponibleTexto(state: ModelState): String = when (state) {
     ModelState.NO_MODEL -> "Modelo no disponible: descárgalo en Configuración."
     ModelState.COPYING -> "Preparando el modelo, un momento…"
@@ -233,7 +260,15 @@ private fun modeloNoDisponibleTexto(state: ModelState): String = when (state) {
     ModelState.READY -> "" // no se usa: la CTA está habilitada
 }
 
-/** Card de acción reutilizable por las dos vías de subida (componente interno, no API pública). */
+/**
+ * Card de acción reutilizable por las dos vías de subida (componente interno,
+ * no API pública). Invocada dos veces por HomeScreen («Imagen única» y «Subir
+ * subconjunto»); `onAction` solo emite el evento, no ejecuta trabajo pesado.
+ *
+ * @param buttonEnabled la CTA pinta deshabilitada aunque `onAction` llegue: el
+ *        caller decide el estado, la card solo refleja.
+ * @param supportingText línea corta bajo la descripción (error/motivo); null = sin línea.
+ */
 @Composable
 private fun ActionCard(
     title: String,
@@ -272,10 +307,12 @@ private fun ActionCard(
     }
 }
 
-/** Nombre visible del documento elegido (p.ej. ISIC_0012345.jpg); null si el proveedor no lo da. */
+/** Nombre visible del documento elegido (p.ej. ISIC_0012345.jpg); null si el proveedor no lo da. Fallback: último segmento del URI. Lo usa la lectura del picker (R4). */
 private fun displayNameOf(context: Context, uri: Uri): String? =
     context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
         if (cursor.moveToFirst()) cursor.getString(0)?.takeIf { it.isNotBlank() } else null
     } ?: uri.lastPathSegment
 
+// Etiqueta de Logcat para los fallos de lectura del picker; nunca loguea bytes
+// de la imagen ni URIs completas. Consumida por Log.w dentro de scope.launch.
 private const val TAG = "HomeScreen"

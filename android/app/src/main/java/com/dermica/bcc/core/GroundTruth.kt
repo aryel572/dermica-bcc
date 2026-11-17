@@ -7,6 +7,10 @@ import org.json.JSONObject
  * Fallo irrecuperable de la referencia de un subconjunto (S3): el texto no es un
  * objeto JSON válido, o no contiene ninguna etiqueta usable.
  *
+ * Lugar en el flujo: la lanzan [GroundTruth.parse] y [GroundTruth.load] (núcleo
+ * puro, sin dependencias Android); la consume ui/subset/SubsetViewModel, que la
+ * captura y la traduce a un estado de error con reintento.
+ *
  * Nunca se propaga como crash: la UI la captura y muestra una pantalla de error
  * con explicación y botón para reintentar.
  */
@@ -15,6 +19,12 @@ class GroundTruthFormatException(message: String) : IllegalArgumentException(mes
 /**
  * Matcher puro del ground truth de un subconjunto (S3): JSON plano
  * `{filename: etiqueta}` versionado junto a la carpeta de imágenes del TESIS.
+ *
+ * Lugar en el flujo: núcleo puro (sin Android, sin Room, sin red). Lo consume
+ * ui/subset/SubsetViewModel para etiquetar cada imagen del lote y excluye del
+ * cálculo las que devuelven null; la cubre GroundTruthTest en JVM. Su salida
+ * visible en la UI es el rótulo de la exclusión («N imágenes sin etiqueta») y
+ * el conteo que se persiste en history_events.excludedCount.
  *
  * Reglas del contrato (S3):
  * - El match es por basename exacto: `labelFor("subset_01/ISIC_1.jpg")` equivale a
@@ -37,19 +47,46 @@ class GroundTruth private constructor(
     val skippedEntries: Int,
 ) {
 
-    /** Etiqueta de referencia para `file` (basename exacto), o null si no tiene entrada. */
+    /**
+     * Etiqueta de referencia para [file] (basename exacto tras el último '/').
+     *
+     * @param file — String: nombre de archivo o «ruta» arbitraria; solo se usa el
+     *        segmento tras el último '/', recortado con [String.trim].
+     * @return String? con la etiqueta tal cual del JSON (sin normalizar), o null
+     *         si el nombre no tiene entrada (el caller lo excluye y lo cuenta aparte).
+     *
+     * Efectos: ninguno; es una consulta pura sobre el mapa cargado.
+     */
     fun labelFor(file: String): String? = labels[basename(file)]
 
-    /** Positivo de referencia (S3): solo la etiqueta exacta "BCC". */
+    /**
+     * Positivo de referencia (S3): solo la etiqueta exacta "BCC".
+     *
+     * @param label — String: etiqueta devuelta por [labelFor] (ya recortada en parse).
+     * @return Boolean: true únicamente para "BCC" en mayúsculas; cualquier otra
+     *         escritura ("bcc", "Bcc") es negativo, igual que en la referencia ISIC.
+     */
     fun isBcc(label: String): Boolean = label == "BCC"
 
     companion object {
-        /** Carga tolerante: devuelve el mapa filename→label (entradas rotas omitidas). */
+        /**
+         * Carga tolerante: devuelve el mapa filename→label (entradas rotas omitidas).
+         *
+         * @param json — String: contenido íntegro del ground_truth.json del subconjunto.
+         * @return Map<String, String>: filename (tal cual del JSON) → etiqueta recortada.
+         * @throws GroundTruthFormatException si el JSON es inválido o no trae ninguna
+         *         etiqueta usable (delega en [parse]).
+         */
+        @Throws(GroundTruthFormatException::class)
         fun load(json: String): Map<String, String> = parse(json).labels
 
         /**
          * Parsea el JSON plano del subconjunto.
          *
+         * @param json — String: contenido íntegro del ground_truth.json; se espera un
+         *        objeto JSON plano `{"NOMBRE.jpg": "ETIQUETA"}`.
+         * @return GroundTruth: instancia con las entradas válidas y el conteo de
+         *         descartadas en [GroundTruth.skippedEntries].
          * @throws GroundTruthFormatException si el texto no es un objeto JSON válido o
          *         no contiene ninguna etiqueta usable (p.ej. se apuntó al archivo
          *         equivocado: una matriz de ceros no sería un resultado honesto).
@@ -86,7 +123,12 @@ class GroundTruth private constructor(
             return GroundTruth(labels = labels, skippedEntries = skipped)
         }
 
-        /** Nombre base tras el último '/', recortado; tolera tanto rutas como nombres planos. */
+        /**
+         * Nombre base tras el último '/', recortado; tolera tanto rutas como nombres planos.
+         *
+         * @param file — String original del caller (puede traer separadores y espacios).
+         * @return String con el segmento tras el último '/', sin espacios en los extremos.
+         */
         private fun basename(file: String): String = file.trim().substringAfterLast('/')
     }
 }

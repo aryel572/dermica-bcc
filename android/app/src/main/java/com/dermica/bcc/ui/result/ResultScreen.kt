@@ -44,6 +44,16 @@ import java.util.Locale
  *   HistoryRepository.addImagePrediction): esta pantalla no escribe nada.
  * - Thumbnail decodificado downsampled (bounds → inSampleSize) para no inflar
  *   memoria con fotos de alta resolución.
+ *
+ * Invocada por AppRoot en AppRoute.RESULT (única vía: navegación tras una
+ * predicción exitosa). State hoisting: recibe el payload completo y dos
+ * callbacks de navegación; no escribe en el historial ni lanza coroutines:
+ * toda la persistencia ocurrió antes de llegar aquí (ver AppRoot.onImageChosen).
+ *
+ * @param result payload de la predicción (veredicto, confianza, bytes del thumbnail).
+ * @param onAnotherImage vuelve a HOME para otra imagen única.
+ * @param onViewHistory navega a HISTORY.
+ * @param modifier slot de layout para el Surface raíz.
  */
 @Composable
 fun ResultScreen(
@@ -52,6 +62,8 @@ fun ResultScreen(
     onViewHistory: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // 768 px: grande para el contenedor de 240 dp con densidad alta; dos veces el
+    // lado visible, suficiente para thumbnail sin pagar memoria de la foto completa.
     val thumbnail = remember(result.imageBytes) { decodeSampled(result.imageBytes, targetPx = 768) }
     val verdict = if (result.isBcc) "Carcinoma basocelular" else "No carcinoma basocelular"
     val verdictColor = if (result.isBcc) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
@@ -124,6 +136,10 @@ fun ResultScreen(
  * Decodifica downsampled con bounds → inSampleSize (potencia de 2). Si la
  * imagen no decodifica (bytes corruptos), devuelve null: el resultado textual
  * ya es válido y el thumbnail es prescindible.
+ *
+ * @param bytes bytes crudos de la imagen tal como llegaron del picker (sin re-codificar).
+ * @param targetPx lado mayor máximo tras el muestreo (potencia de 2 hacia abajo).
+ * @return bitmap escalado, o null si la imagen no decodifica.
  */
 private fun decodeSampled(bytes: ByteArray, targetPx: Int): Bitmap? {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }

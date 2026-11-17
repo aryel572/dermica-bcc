@@ -56,6 +56,21 @@ import java.util.Locale
  * La pantalla recibe `items` ya mapeados (state hoisting); la conexión con el
  * Flow del repositorio vive en AppRoot. Las fórmulas de las métricas NO se
  * muestran jamás (S4).
+ *
+ * Invocada por AppRoot en AppRoute.HISTORY. Flujo de datos completo:
+ * HistoryDatabase → HistoryRepository.items (Flow<List<HistoryItem>>, ya
+ * mapeado desde HistoryEvent con HistoryMappers) → AppRoot
+ * (collectAsStateWithLifecycle) → aquí como `items`. Esta pantalla solo
+ * pinta lo que recibe: no consulta Room, no lanza coroutines y no conoce
+ * los eventos.
+ *
+ * Variantes de HistoryItem (sealed): [HistoryItem.Image] → ImageCard;
+ * [HistoryItem.Subset] → SubsetCard. El `key = { it.id }` de la LazyColumn
+ * mantiene el estado de scroll/foco por tarjeta entre recomposiciones.
+ *
+ * @param items historial ya mapeado a HistoryItem, ordenado como lo entrega el
+ *        repositorio (más reciente arriba).
+ * @param modifier slot de layout para la LazyColumn.
  */
 @Composable
 fun HistoryScreen(
@@ -80,7 +95,7 @@ fun HistoryScreen(
     }
 }
 
-/** Card de predicción de imagen única. */
+/** Card de predicción de imagen única. Invocada por el items(...) de HistoryScreen. */
 @Composable
 private fun ImageCard(item: HistoryItem.Image, modifier: Modifier = Modifier) {
     val isBcc = item.verdict == "BCC"
@@ -113,7 +128,12 @@ private fun ImageCard(item: HistoryItem.Image, modifier: Modifier = Modifier) {
     }
 }
 
-/** Cobertura honesta: procesadas; si hubo sin etiqueta, se informa también. */
+/**
+ * Cobertura honesta: procesadas; si hubo sin etiqueta, se informa también.
+ *
+ * @param item card de subconjunto con contadores ya calculados por el repositorio.
+ * @return texto listo para pintar, p.ej. «38 imágenes procesadas · 7 sin etiqueta».
+ */
 private fun coverageText(item: HistoryItem.Subset): String =
     if (item.excludedCount > 0) {
         "${item.imageCount} imágenes procesadas · ${item.excludedCount} sin etiqueta"
@@ -121,7 +141,12 @@ private fun coverageText(item: HistoryItem.Subset): String =
         "${item.imageCount} imágenes procesadas"
     }
 
-/** Chip pequeño de veredicto: BCC en error/contenedor y No-BCC en contenedor terciario. */
+/**
+ * Chip pequeño de veredicto: BCC en error/contenedor y No-BCC en contenedor
+ * terciario. Invocado por ImageCard. Contrato de accesibilidad: el chip se
+ * anuncia como un único nodo "Veredicto: …" (clearAndSetSemantics) para que
+ * TalkBack no lea la palabra suelta sin contexto.
+ */
 @Composable
 private fun VerdictChip(isBcc: Boolean, modifier: Modifier = Modifier) {
     val (text, bg, fg) = if (isBcc) {
@@ -147,7 +172,13 @@ private fun VerdictChip(isBcc: Boolean, modifier: Modifier = Modifier) {
     }
 }
 
-/** Card de subconjunto procesado: TA·NFS·PEO siempre; TP/TN/FP/FN difuminados con ojo (S4/S5). */
+/**
+ * Card de subconjunto procesado: TA·NFS·PEO siempre; TP/TN/FP/FN difuminados
+ * con ojo (S4/S5). Invocada por el items(...) de HistoryScreen.
+ *
+ * Estado local: `truthVisible` gobierna SOLO el panel de desglose; la fila TA·NFS·PEO
+ * es siempre visible. El ojo (ConfusionPanel.onToggle) alterna ese flag.
+ */
 @Composable
 private fun SubsetCard(item: HistoryItem.Subset, modifier: Modifier = Modifier) {
     // Por defecto difuminado; el ojo alterna visible/oculto (S4: «un icono de ojo en la esquina»).
@@ -202,7 +233,7 @@ private fun SubsetCard(item: HistoryItem.Subset, modifier: Modifier = Modifier) 
     }
 }
 
-/** Celda de métrica: etiqueta pequeña + valor grande (sin fórmula visible, S4). */
+/** Celda de métrica: etiqueta pequeña + valor grande (sin fórmula visible, S4). Invocada por SubsetCard y ConfusionPanel. */
 @Composable
 private fun StatCell(label: String, value: String, modifier: Modifier = Modifier) {
     Surface(
@@ -221,11 +252,17 @@ private fun StatCell(label: String, value: String, modifier: Modifier = Modifier
 }
 
 /**
- * Desglose de matriz de confusión con eye toggle.
+ * Desglose de matriz de confusión con eye toggle (contrato UI: `visible` +
+ * `onToggle` par, igual que el SubsetCard que lo invoca).
  *
  * Difuminado por defecto: alpha bajo sobre el contenido + scrim semitransparente
  * (~0.35) por encima. minSdk 26: sin gaussianBlur obligatorio, el scrim cumple
  * el contrato visual (S4/S5). Solo números, sin fórmulas.
+ *
+ * @param visible true = desglose revelado (alpha 1, sin scrim, accesible); false =
+ *        velado (alpha 0.12 + scrim y ocultación auditiva).
+ * @param onToggle callback del ojo; invierte `visible` en el caller. El botón
+ *        mide ≥ 48 dp (T6) y anuncia «Mostrar/Ocultar totales TP, TN, FP y FN».
  */
 @Composable
 private fun ConfusionPanel(
@@ -237,6 +274,8 @@ private fun ConfusionPanel(
     onToggle: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // Scrim 0.35: surfaceVariant semitransparente; se intuye la estructura de la
+    // tabla sin filtrar los dígitos (contrato visual S4/S5).
     val scrimColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
     Row(
         modifier = modifier.fillMaxWidth(),
@@ -286,7 +325,7 @@ private fun ConfusionPanel(
     }
 }
 
-/** Empty state: icono + mensaje honesto (nada de listas vacías mudas). */
+/** Empty state: icono + mensaje honesto (nada de listas vacías mudas). Invocada por HistoryScreen cuando `items` está vacío. */
 @Composable
 private fun EmptyHistory(modifier: Modifier = Modifier) {
     Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -306,8 +345,19 @@ private fun EmptyHistory(modifier: Modifier = Modifier) {
     }
 }
 
-/** Formato numérico con punto decimal y un decimal (Locale.US, estable entre dispositivos). */
+/**
+ * Formato numérico con punto decimal y un decimal (Locale.US, estable entre
+ * dispositivos). Consumido por la fila TA·NFS·PEO y PEO/TA de la card.
+ *
+ * @param value valor en la unidad ya convertida (p.ej. porcentaje 0–100).
+ * @return cadena con un decimal, p.ej. "74.5".
+ */
 private fun formatNumber(value: Double): String = String.format(Locale.US, "%.1f", value)
 
-/** Confianza expresada en % con un decimal. */
+/**
+ * Confianza expresada en % con un decimal. Consumida por la card de imagen única.
+ *
+ * @param value porcentaje ya multiplicado por 100.
+ * @return cadena con un decimal, p.ej. "93.2".
+ */
 private fun formatPercent(value: Double): String = String.format(Locale.US, "%.1f", value)
