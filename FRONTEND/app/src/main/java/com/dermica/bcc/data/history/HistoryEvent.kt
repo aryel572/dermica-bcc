@@ -46,4 +46,7 @@ data class HistoryEvent(
     val ta: Double? = null,
     val nfs: Double? = null,
     val peo: Double? = null,
+    // Evento subconjunto (v2): imágenes de la carpeta sin entrada en el ground truth,
+    // excluidas de la matriz de confusión (S3). Nullable: las filas v1 quedan NULL → 0 al mapear.
+    val excludedCount: Int? = null,
 )

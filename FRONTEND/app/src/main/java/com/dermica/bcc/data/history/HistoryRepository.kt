@@ -39,11 +39,16 @@ class HistoryRepository(private val dao: HistoryDao) {
         )
     }
 
-    /** Registra el resultado del modo subconjunto (lo usa T4, S6). */
+    /**
+     * Registra el resultado del modo subconjunto (S6). Las métricas se derivan de
+     * [totals] aquí (S4: las fórmulas viven solo en SubsetMetrics); `excluded`
+     * son las imágenes sin entrada en el ground truth, fuera de la matriz (S3).
+     */
     suspend fun addSubsetResult(
         folderLabel: String,
         imageCount: Int,
         totals: Totals,
+        excluded: Int = 0,
         createdAt: Long = System.currentTimeMillis(),
     ) {
         val metrics: SubsetMetrics = totals.compute()
@@ -53,6 +58,7 @@ class HistoryRepository(private val dao: HistoryDao) {
                 createdAt = createdAt,
                 folderLabel = folderLabel,
                 imageCount = imageCount,
+                excludedCount = excluded,
                 tp = totals.tp,
                 tn = totals.tn,
                 fp = totals.fp,

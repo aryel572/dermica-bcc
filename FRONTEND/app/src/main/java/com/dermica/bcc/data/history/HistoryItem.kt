@@ -26,6 +26,7 @@ sealed interface HistoryItem {
         override val createdAt: Long,
         val folderLabel: String,
         val imageCount: Int,
+        val excludedCount: Int = 0,
         val ta: Double,
         val nfs: Int,
         val peo: Double,

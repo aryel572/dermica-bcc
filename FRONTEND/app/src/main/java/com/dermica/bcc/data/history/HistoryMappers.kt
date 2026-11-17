@@ -42,6 +42,7 @@ internal fun HistoryEvent.toItemOrNull(): HistoryItem? = when (kind) {
             createdAt = createdAt,
             folderLabel = folder,
             imageCount = count,
+            excludedCount = excludedCount ?: 0,
             ta = taValue,
             nfs = nfsValue.toInt(),
             peo = peoValue,

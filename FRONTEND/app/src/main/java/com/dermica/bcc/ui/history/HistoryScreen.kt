@@ -110,6 +110,14 @@ private fun ImageCard(item: HistoryItem.Image, modifier: Modifier = Modifier) {
     }
 }
 
+/** Cobertura honesta: procesadas; si hubo sin etiqueta, se informa también. */
+private fun coverageText(item: HistoryItem.Subset): String =
+    if (item.excludedCount > 0) {
+        "${item.imageCount} imágenes procesadas · ${item.excludedCount} sin etiqueta"
+    } else {
+        "${item.imageCount} imágenes procesadas"
+    }
+
 /** Chip pequeño de veredicto: BCC en error/contenedor y No-BCC en contenedor terciario. */
 @Composable
 private fun VerdictChip(isBcc: Boolean, modifier: Modifier = Modifier) {
@@ -153,7 +161,7 @@ private fun SubsetCard(item: HistoryItem.Subset, modifier: Modifier = Modifier) 
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        text = "${item.imageCount} de 15 imágenes",
+                        text = coverageText(item),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
