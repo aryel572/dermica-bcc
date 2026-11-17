@@ -4,6 +4,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("com.google.devtools.ksp")
 }
 
 // APP_API_KEY se lee de local.properties (gitignored) y se expone vía BuildConfig.
@@ -50,6 +51,11 @@ android {
     }
 }
 
+// Room exporta el schema JSON para auditoría de migraciones futuras (hard rule de storage).
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2025.06.01"))
     implementation("androidx.compose.ui:ui")
@@ -59,6 +65,10 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
+    // Room: historial persistente de predicciones (S6/S9). KSP en lugar de kapt (Kotlin 2.x).
+    implementation("androidx.room:room-runtime:2.8.5")
+    implementation("androidx.room:room-ktx:2.8.5")
+    ksp("androidx.room:room-compiler:2.8.5")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     // LiteRT (sucesor oficial de TFLite): runtime de inferencia on-device (S9).
     // La API Java conserva el paquete org.tensorflow.lite: artefacto renombrado, paquete no.
