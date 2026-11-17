@@ -1,0 +1,32 @@
+# dermica-core — núcleo compartido del monorepo APP_DERMICA
+#
+# Qué vive aquí: símbolos que hoy usa al menos dos productos del repo
+# (medido con grep sobre los 17 módulos Python del árbol, nov-2026):
+#   - labels.py   ISIC_LABELS (orden one-hot del GT 2019), BCC_LABEL, is_bcc()
+#                 consumidores: pipeline/splits, pipeline/tesis, pipeline/audit
+#   - hashing.py  sha256_file() (chunks de 1 MiB), sha256_bytes()
+#                 consumidores: pipeline/audit, pipeline/tesis, pipeline/prep/export_float16
+#   - params.py   EXPECTED_SHA256 del release 1.0.0 (contrato con la app Android)
+#   - io.py       leer_csv_csv_splits() con validación de encabezados
+#                 consumidores: pipeline/prep (resize_224, resize_224_multi, resize_224_test)
+#   - cli.py      ParserEspanol (ArgumentParser con mensajes en español neutro)
+#                 consumidores: los 10 módulos CLI de pipeline/ (antes copias byte-idénticas)
+[build-system]
+requires = ["hatchling==1.33.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dermica-core"
+version = "1.0.0"
+description = "Núcleo compartido de APP_DERMICA: etiquetas ISIC 2019, hashing SHA-256, lectura validada de splits y CLI en español neutro."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [{ name = "APP_DERMICA" }]
+keywords = ["dermica", "isic-2019", "bcc"]
+# Sin dependencias externas: io.py importa pandas de forma perezosa (los productos
+# que lo llaman ya lo declaran), lo que mantiene el core instalable y mínimo.
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["dermica_core"]
