@@ -79,7 +79,7 @@ fun ResultScreen(
             thumbnail?.let { bitmap ->
                 Image(
                     bitmap = bitmap.asImageBitmap(),
-                    contentDescription = "Imagen dermatoscópica evaluada",
+                    contentDescription = "Imagen analizada",
                     modifier = Modifier
                         .size(240.dp)
                         .clip(RoundedCornerShape(16.dp)),

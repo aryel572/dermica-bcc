@@ -35,6 +35,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.hideFromAccessibility
 import androidx.compose.ui.unit.dp
 import com.dermica.bcc.core.DateTimes
 import com.dermica.bcc.data.history.HistoryItem
@@ -126,7 +129,15 @@ private fun VerdictChip(isBcc: Boolean, modifier: Modifier = Modifier) {
     } else {
         Triple("No-BCC", MaterialTheme.colorScheme.tertiaryContainer, MaterialTheme.colorScheme.onTertiaryContainer)
     }
-    Surface(color = bg, shape = RoundedCornerShape(8.dp), modifier = modifier) {
+    Surface(
+        color = bg,
+        shape = RoundedCornerShape(8.dp),
+        // clearAndSetSemantics: el chip anuncia "Veredicto: …" como un solo nodo;
+        // sin esto TalkBack leería solo "BCC"/"No-BCC", sin el prefijo de contexto.
+        modifier = modifier.clearAndSetSemantics {
+            contentDescription = if (isBcc) "Veredicto: BCC" else "Veredicto: No carcinoma basocelular"
+        },
+    ) {
         Text(
             text = text,
             style = MaterialTheme.typography.labelMedium,
@@ -238,20 +249,25 @@ private fun ConfusionPanel(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f),
         )
-        FilledTonalIconButton(onClick = onToggle) {
+        // 48 dp táctiles explícitos (T6): el default visual (40 dp) cumple el mínimo
+        // de sistema pero el requisito del proyecto exige objetivo medible ≥ 48 dp.
+        FilledTonalIconButton(onClick = onToggle, modifier = Modifier.size(48.dp)) {
             Icon(
                 if (visible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                contentDescription = if (visible) "Ocultar Totales TP, TN, FP y FN" else "Mostrar Totales TP, TN, FP y FN",
+                contentDescription = if (visible) "Ocultar totales TP, TN, FP y FN" else "Mostrar totales TP, TN, FP y FN",
             )
         }
     }
 
     Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))) {
-        // Contenido: legible solo cuando visible == true.
+        // Contenido: legible solo cuando visible == true. hideFromAccessibility
+        // cuando está velado: el difuminado es un resguardo visual y también auditivo;
+        // TalkBack salta los totales TP/TN/FP/FN hasta que el usuario los revele con el ojo.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .alpha(if (visible) 1f else 0.12f),
+                .alpha(if (visible) 1f else 0.12f)
+                .then(if (visible) Modifier else Modifier.clearAndSetSemantics { hideFromAccessibility() }),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             StatCell(label = "TP", value = tp.toString(), modifier = Modifier.weight(1f))
