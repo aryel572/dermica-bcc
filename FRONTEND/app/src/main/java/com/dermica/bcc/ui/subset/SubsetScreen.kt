@@ -87,7 +87,8 @@ fun SubsetScreen(
                 onBack = onBack,
             )
 
-            SubsetRunState.Cancelled -> CancelledContent(
+            is SubsetRunState.Cancelled -> CancelledContent(
+                savedSubsets = state.savedSubsets,
                 onPickAgain = viewModel::reset,
                 onBack = onBack,
             )
@@ -301,12 +302,19 @@ private fun ErrorContent(
     }
 }
 
-/** Cancelación pedida por el usuario: estado Final honesto, sin resultados parciales. */
+/** Cancelación pedida por el usuario: estado final honesto. Las subcarpetas ya persistidas se informan. */
 @Composable
 private fun CancelledContent(
+    savedSubsets: Int,
     onPickAgain: () -> Unit,
     onBack: () -> Unit,
 ) {
+    val body = if (savedSubsets > 0) {
+        // Corrida multi: lo ya persistido NO se pierde (S5-multi); la carpeta en curso se descarta.
+        "Cancelaste el procesamiento. Los $savedSubsets subconjuntos ya procesados quedaron guardados en el historial."
+    } else {
+        "No se guardó ningún resultado en el historial."
+    }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -323,7 +331,7 @@ private fun CancelledContent(
         )
         Text(text = "Procesamiento cancelado", style = MaterialTheme.typography.titleLarge)
         Text(
-            text = "No se guardó ningún resultado en el historial.",
+            text = body,
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
