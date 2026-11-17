@@ -74,6 +74,16 @@ Salidas (bajo `--out-dir`)
                       procedencia de los artefactos
   README-corrida.md   (lo escribe un paso posterior, no este script)
 
+Quién consume sus salidas
+-------------------------
+* `tesis_manifest.csv` → export_ground_truth.py (JSON de etiquetas por
+  subconjunto, para la demo de la app), verificar() de este mismo script y
+  hf_upload.py (subida como manifiesto al git-remote del dataset).
+* `tesis_exclude.csv` → make_splits.py, como lista de exclusión del split
+  70/20/10; es el contrato que mantiene TESIS fuera del entrenamiento.
+* `summary.json` → la evidencia de S2 paso 1 (recibo de la corrida: semilla,
+  conteos, distribución de clases de los picks).
+
 Uso:
     uv run python form_tesis.py --data-dir ~DIR --out-dir ~DIR_OUT --tesis-dir ~DIR_TESIS
     uv run python form_tesis.py --data-dir ~DIR --out-dir ~DIR_OUT --tesis-dir ~DIR_TESIS --force
@@ -102,8 +112,8 @@ import pandas as pd
 # TESIS; no incrustes estos valores — la tesis cita config.json como contrato
 # congelado. La resuelven form() y verificar().
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
-TRAIN_ZIP = "ISIC_2019_Training_Input.zip"   # zip de training de ISIC 2019; nunca se extrae masivamente
-GT_TRAIN = "ISIC_2019_Training_GroundTruth.csv"   # etiquetas one-hot de training
+TRAIN_ZIP = "ISIC_2019_Training_Input.zip"   # zip de training de ISIC 2019; nunca se extrae masivamente; lo abre form() en streaming
+GT_TRAIN = "ISIC_2019_Training_GroundTruth.csv"   # etiquetas one-hot de training; las carga load_train_labels()
 
 
 # Carpeta de primer nivel DENTRO del zip de training; las entradas se direccionan
@@ -142,6 +152,11 @@ def load_train_labels(data_dir: Path) -> pd.Series:
     Efectos colaterales
     -------------------
     Parseo del CSV en solo lectura. NUNCA abre el GT de test de ISIC.
+
+    Globales
+    --------
+    `GT_TRAIN` (nombre del CSV de training, de este módulo) e `ISIC_LABELS`
+    (orden de columnas one-hot, de dermica_core.labels).
     """
     gt = pd.read_csv(data_dir / GT_TRAIN)
     labels = gt[ISIC_LABELS].idxmax(axis=1)
@@ -191,6 +206,10 @@ def pick_subset(rng: random.Random, bcc_ids: list, rest_ids: list, n_bcc: int, n
     Efectos colaterales
     -------------------
     Avanza el estado de rng. No toca archivos.
+
+    Globales
+    --------
+    Ninguna.
     """
     picks = rng.sample(bcc_ids, n_bcc) + rng.sample(rest_ids, n_total - n_bcc)
     rng.shuffle(picks)
@@ -245,6 +264,12 @@ def form(data_dir: Path, out_dir: Path, tesis_dir: Path, force: bool) -> int:
     Crea tesis_dir y out_dir; escribe ~450+ copias jpg y tres artefactos.
     Nunca escribe en data_dir. Nunca abre el zip de test de ISIC ni los CSV de
     test.
+
+    Globales
+    --------
+    `CONFIG_PATH` (semilla y forma de TESIS desde config.json), `TRAIN_ZIP`
+    y `ZIP_PREFIX` (zip de training y su prefijo de primer nivel). El GT llega
+    indirectamente vía load_train_labels() (`GT_TRAIN`, `ISIC_LABELS`).
     """
     t0 = time.time()
     cfg = json.loads(CONFIG_PATH.read_text())
@@ -265,15 +290,15 @@ def form(data_dir: Path, out_dir: Path, tesis_dir: Path, force: bool) -> int:
         return 1
 
     rng = random.Random(seed)
-    subset_picks = {}
+    subset_picks = {}   # subset_id -> lista de picks de ese subconjunto (orden subset_01..30)
     for i in range(1, n_subsets + 1):
         subset_picks[f"subset_{i:02d}"] = pick_subset(rng, bcc_ids, rest_ids, min_bcc, per_subset)
 
     # Copia las imágenes del zip de training una entrada a la vez. Sin
     # extracción masiva: solo se escriben los picks (~450, menos únicos).
     zip_path = data_dir / TRAIN_ZIP
-    copied = 0
-    rows = []
+    copied = 0          # contador de copias jpg escritas (≈450; duplicados entre subconjuntos cuentan aparte)
+    rows = []           # una fila por pick: subset_id, image_id, label_full, sha256 del archivo copiado y entrada original dentro del zip
     with zipfile.ZipFile(zip_path) as zf:
         for subset_id in sorted(subset_picks):
             dest_dir = tesis_dir / subset_id
@@ -308,7 +333,7 @@ def form(data_dir: Path, out_dir: Path, tesis_dir: Path, force: bool) -> int:
     # exclusión es sobre ids, así que colapsa al conjunto único; las etiquetas
     # se buscan en la serie del GT (misma fuente que el manifiesto — consistentes
     # por construcción).
-    unique_ids = sorted({r["image_id"] for r in rows})
+    unique_ids = sorted({r["image_id"] for r in rows})   # ids únicos para la lista de exclusión (colapsa repeticiones entre subconjuntos)
     exclude = out_dir / "tesis_exclude.csv"
     ex_labels = labels[unique_ids]
     ex_unique = pd.DataFrame({"image_id": unique_ids,
@@ -316,7 +341,7 @@ def form(data_dir: Path, out_dir: Path, tesis_dir: Path, force: bool) -> int:
     ex_unique.to_csv(exclude, index=False)
 
     per_subset_bcc = {sid: sum(1 for r in rows if r["subset_id"] == sid and r["label_full"] == "BCC")
-                      for sid in sorted(subset_picks)}
+                      for sid in sorted(subset_picks)}   # BCC por subconjunto; alimenta el recibo y la compuerta min_bcc
     class_counts = pd.Series([r["label_full"] for r in rows]).value_counts().to_dict()
     summary = {
         "generado_utc": datetime.now(timezone.utc).isoformat(),
@@ -402,6 +427,12 @@ def verificar(manifest_path: Path, data_dir: Path, tesis_dir: Path) -> int:
     -------------------
     Solo lectura: hashea los archivos copiados bajo tesis_dir y
     parsea el CSV GT. No escribe nada.
+
+    Globales
+    --------
+    `CONFIG_PATH` (aspectos verificados contra config.json: semilla, forma de
+    TESIS, mínimo de BCC). El GT llega indirectamente vía load_train_labels()
+    (`GT_TRAIN`, `ISIC_LABELS`).
     """
     t0 = time.time()
     cfg = json.loads(CONFIG_PATH.read_text())
@@ -459,6 +490,10 @@ def main() -> int:
     -------------------
     Ver form()/verificar(); aquí no ocurre nada más allá de parsear argumentos
     y delegar.
+
+    Globales
+    --------
+    Ninguna (las rutas se resuelven en form()/verificar()).
     """
     ap = ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data-dir", type=Path, required=True, metavar="~DIR",

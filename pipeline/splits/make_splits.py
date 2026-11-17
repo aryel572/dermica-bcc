@@ -28,6 +28,16 @@ Salidas (bajo `--out-dir`)
                                  ratios por partición, % BCC)
   README-corrida.md              (lo escribe un paso posterior, no este script)
 
+Quién consume sus salidas
+-------------------------
+* `train.csv` / `val.csv` / `test.csv` → la fase S3 de modelado (entrenamiento
+  y validación) y `verify_outputs()` de este mismo script (`--verificar`),
+  que los relee para re-auditar cardinalidad, columnas y lesiones en dos
+  particiones sin reescribir nada.
+* `summary.json` → la evidencia de S2 paso 2 (recibo numérico de la corrida:
+  semilla, conteos, % BCC) y de nuevo `verify_outputs()`, que lo contrasta
+  con los CSV escritos como compuerta de conformidad.
+
 Nunca toca el split TEST oficial de ISIC 2019 ni escribe en las fuentes de
 entrada: solo lee el GT/metadata de training y la lista de exclusión.
 
@@ -55,8 +65,8 @@ from sklearn.model_selection import StratifiedGroupKFold
 # del split. Se resuelve desde __file__ para que el CWD no importe. La
 # consumen make(), verify_outputs() y las compuertas de ratios.
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
-GT_TRAIN = "ISIC_2019_Training_GroundTruth.csv"   # etiquetas one-hot de training (única fuente de etiquetas)
-META_TRAIN = "ISIC_2019_Training_Metadata.csv"    # metadata de training; aporta image↔lesion_id
+GT_TRAIN = "ISIC_2019_Training_GroundTruth.csv"   # etiquetas one-hot de training (única fuente de etiquetas); la consumen load_frames() y make() (procedencia de summary.json)
+META_TRAIN = "ISIC_2019_Training_Metadata.csv"    # metadata de training; aporta image↔lesion_id; la consume load_frames()
 
 
 
@@ -87,6 +97,12 @@ def load_frames(data_dir: Path) -> pd.DataFrame:
     cambia y un image aparece duplicado o sin pareja, el fallo ocurre aquí y no
     silenciosamente más abajo. label_full se deriva del one-hot con idxmax;
     label_bcc es el binario BCC vs resto (problema del proyecto).
+
+    Globales
+    --------
+    `GT_TRAIN` y `META_TRAIN` (nombres de los CSV crudos de training,
+    definidos en este módulo) e `ISIC_LABELS` (orden de columnas one-hot, de
+    dermica_core.labels).
     """
     gt = pd.read_csv(data_dir / GT_TRAIN)
     meta = pd.read_csv(data_dir / META_TRAIN)[["image", "lesion_id"]]
@@ -136,6 +152,11 @@ def build_splits(df: pd.DataFrame, seed: int) -> pd.Series:
     asignación estratificada-agrupada reproducible y no dependiente del orden
     del CSV. Los 10 folds se reúnen 7 (train) / 2 (val) / 1 (test) tras el
     shuffle, lo que da 70/20/10 exacto y determinista.
+
+    Globales
+    --------
+    Ninguna (importa solo StratifiedGroupKFold; todo lo demás llega por
+    parámetros).
     """
     skf = StratifiedGroupKFold(n_splits=10, shuffle=True, random_state=seed)
     assign = pd.Series("", index=df.index, dtype=object)
@@ -166,6 +187,10 @@ def ratios_report(df: pd.DataFrame) -> dict:
     label_bcc es 0/1, por eso label_bcc.mean() es exactamente la tasa BCC de la
     partición (suma de BCC / total). Se reporta para auditar el balance tras el
     split: no falla si varía ±1%, pero deja evidencia numérica en summary.json.
+
+    Globales
+    --------
+    Ninguna.
     """
     rep = {}
     for split, g in df.groupby("split"):
@@ -212,6 +237,11 @@ def verify(df: pd.DataFrame, cfg: dict, source_exclude: set) -> list[str]:
     - image_id duplicados -> cardinalidad inflada; rompe ratios y métricas.
     - ratios 70/20/10: se avisa (no se falla) si alguna partición se desvía
       >1 p.p.; el tamaño exacto depende del dataset y no debe ser una compuerta dura.
+
+    Globales
+    --------
+    Ninguna (los objetivos de ratio llegan dentro de `cfg`; imprime avisos
+    por stdout).
     """
     problems = []
     splits = {s: set(df[df["split"] == s]["image"]) for s in ("train", "val", "test")}
@@ -269,6 +299,10 @@ def write_outputs(df: pd.DataFrame, out_dir: Path) -> dict:
     lesion_id ausente se escribe como cadena vacía (no "NaN" ni null), de modo
     que el consumidor (entrenamiento) siempre vea strings. El orden de columnas
     es el contrato: image, split, label_full, label_bcc, lesion_id.
+
+    Globales
+    --------
+    Ninguna (las rutas de destino llegan en `out_dir`).
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     counts = {}
@@ -306,6 +340,11 @@ def make(data_dir: Path, out_dir: Path, exclude_csv: Path) -> int:
     Contrato: si cualquier compuerta inline falla, NO se escribe ningún
     artefacto (evita summary/CSVs engañosos a medio construir); mensajes de
     error listan los problemas uno a uno. Los datos crudos son solo lectura.
+
+    Globales
+    --------
+    `CONFIG_PATH` (semilla y ratios `splits` desde config.json), `GT_TRAIN`
+    y `META_TRAIN` (procedencia registrada en summary.json).
     """
     t0 = time.time()
     cfg = json.loads(CONFIG_PATH.read_text())
@@ -334,6 +373,7 @@ def make(data_dir: Path, out_dir: Path, exclude_csv: Path) -> int:
 
     counts = write_outputs(df, out_dir)
     rep = ratios_report(df)
+    # Recibo numérico de la corrida (lo relee verify_outputs() y la evidencia de S2).
     summary = {
         "generado_utc": datetime.now(timezone.utc).isoformat(),
         "seed": seed,
@@ -386,6 +426,10 @@ def verify_outputs(summary_path: Path, exclude_csv: Path) -> int:
     cardinalidades por partición contra summary.json, valores de split válidos,
     columnas esperadas, exclusiones ausentes, image únicos y ninguna lesión en
     más de un split; ratios con aviso ±1%.
+
+    Globales
+    --------
+    `CONFIG_PATH` (ratios objetivo 70/20/10 desde config.json).
     """
     cfg = json.loads(CONFIG_PATH.read_text())
     if not summary_path.exists():
@@ -442,6 +486,10 @@ def main() -> int:
 
     Contrato: make() es la única ruta que escribe artefactos; verificar no
     escribe. Código de retorno 0 = OK, 1 = fallo (errores en pantalla).
+
+    Globales
+    --------
+    Ninguna (las rutas se resuelven en make()/verify_outputs()).
     """
     ap = ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data-dir", type=Path, required=True, metavar="~DIR",
