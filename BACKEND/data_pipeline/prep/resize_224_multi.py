@@ -1,13 +1,38 @@
 #!/usr/bin/env python3
-"""Prepara variante multi-clase (8 clases ISIC) para el entrenamiento de comparación.
+"""Prepara la variante multi-clase (8 clases ISIC) para el entrenamiento de comparación.
 
-Copia train+val (70/20/10 splits) re-escalados a 224 px con carpetas por clase
-(MEL, NV, BCC, AK, BKL, DF, VASC, SCC — sin UNK, ausente en train). TESIS y
-TEST ISIC fuera. Salida fuera del repo: resultados/s3-training/prepared-multi/.
+Propósito
+---------
+Lee las imágenes crudas de ISIC 2019 (solo lectura) y los CSV particionados
+70/20/10 de la fase de splits, y genera la copia de entrenamiento re-escalada
+a 224 px organizada por partición y clase completa:
+`<out-dir>/{train,val}/<CLASE>/<image>.jpg` con las 8 clases de ISIC 2019 que
+tienen presencia en training (MEL, NV, BCC, AK, BKL, DF, VASC, SCC — sin UNK,
+ausente en train).
 
-Uso: uv run python resize_224_multi.py   (ejecutar desde este directorio)
+El TEST oficial de ISIC 2019 nunca se toca y TESIS tampoco aparece (sus ids
+ya fueron excluidos de train/val en la fase de splits).
+
+Entradas
+--------
+* `--data-dir ~DIR` (obligatorio): directorio con los archivos crudos de
+  ISIC 2019 (el zip de training). Origen EXTERNO al repo; SOLO LECTURA.
+* `--splits-dir ~DIR_CSV` (obligatorio): directorio con train.csv y val.csv
+  (columnas image, split, label_full, label_bcc, lesion_id).
+* `--out-dir ~DIR_OUT` (obligatorio): destino de la copia preparada.
+
+Salidas
+-------
+`<out-dir>/{train,val}/<CLASE>/<image>.jpg` (fuera del repo).
+
+Uso:
+    uv run python resize_224_multi.py --data-dir ~DIR --splits-dir ~DIR_CSV --out-dir ~DIR_OUT
+
+Cubre el trabajo de la fase S3, variante de entrenamiento de comparación
+multi-clase (MOBILE-D / CRISP-DM).
 """
 
+import argparse
 import sys
 import time
 import zipfile
@@ -15,38 +40,88 @@ from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
+import pandas as pd
 from PIL import Image
 
-# Monorepo: este archivo vive en data_pipeline/prep/; parents[4] resuelve a .../APP_DERMICA
-APP_ROOT = Path(__file__).resolve().parents[4]
-DATA_DIR = APP_ROOT / "DATA_CRUDA"  # ISIC 2019 crudo; SOLO LECTURA
-SPLITS_DIR = APP_ROOT / "resultados" / "s2-splits"  # splits 70/20/10 agrupados por lesion_id (S2)
-OUT_DIR = APP_ROOT / "resultados" / "s3-training" / "prepared-multi" / "224"  # salida multi-clase (fuera del repo)
-TRAIN_ZIP = "ISIC_2019_Training_Input.zip"  # zip oficial ISIC; nunca se extrae completo
-ZIP_PREFIX = "ISIC_2019_Training_Input/"    # prefijo de entradas dentro del zip
-IMG_SIZE = 224   # input MobileNetV3-Small (checkpoint imagenet)
-JPEG_Q = 85      # q85: suficiente para 224 px, ~35-50 KB por imagen
+# Nombres canónicos de ISIC 2019 dentro del directorio de entrada. TRAIN_ZIP
+# es el archivo de origen; ZIP_PREFIX es la carpeta de primer nivel DENTRO
+# del zip. Los consume main().
+TRAIN_ZIP = "ISIC_2019_Training_Input.zip"
+ZIP_PREFIX = "ISIC_2019_Training_Input/"
+IMG_SIZE = 224   # input MobileNetV3-Small (checkpoint imagenet); lo consume main()
+JPEG_Q = 85      # q85: suficiente para 224 px, ~35-50 KB por imagen; lo consume main()
+
+
+class _ParserEspanol(argparse.ArgumentParser):
+    """ArgumentParser con los mensajes de error en español neutro.
+
+    argparse redacta por defecto en inglés; el pipeline de la tesis es en
+    español, así que los fallos de invocación se traducen aquí (solo el
+    texto mostrado, nunca el comportamiento ni los códigos de salida:
+    sigue siendo exit 2 ante argumentos inválidos o faltantes).
+    """
+
+    def error(self, message: str) -> None:
+        """Imprime el uso y un error en español; sale con código 2.
+
+        Parámetros
+        ----------
+        message : str
+            Detalle redactado por argparse (se conserva el dato útil, p. ej.
+            los nombres de los flags faltantes, pero se enmarca en español).
+
+        Retorno
+        -------
+        No retorna: termina el proceso con exit 2.
+        """
+        self.print_usage(sys.stderr)
+        if "the following arguments are required" in message:
+            faltan = message.split(":", 1)[1].strip()
+            self.exit(2, f"ERROR: faltan los flags obligatorios: {faltan}\n"
+                         f"Consulta --help para la ayuda completa en español.\n")
+        self.exit(2, f"ERROR: {message}\nConsulta --help para la ayuda completa en español.\n")
 
 
 def main() -> int:
     """Ejecuta el re-escalado multi-clase de train+val.
 
-    Efectos colaterales: escribe OUT_DIR/{train,val}/<CLASE>/<image>.jpg (fuera del repo).
-    Retorna: 0 si todo imagen tuvo entry en el zip, 1 si alguna faltó (saltadas).
-    Por qué marcar falla 1: un archivo faltante es señal de que el zip/version cambió;
+    Retorno
+    -------
+    int
+        0 si cada imagen tuvo entry en el zip, 1 si alguna faltó (saltadas).
+
+    Errores
+    -------
+    FileNotFoundError / zipfile.BadZipFile
+        Si falta el zip, no es válido o faltan train.csv/val.csv.
+
+    Efectos colaterales
+    -------------------
+    Escribe <out-dir>/{train,val}/<CLASE>/<image>.jpg (fuera del repo).
+
+    Por qué marcar falla 1: un archivo faltante es señal de que el zip/versión cambió;
     no debe pasar desapercibido en la preparación del entrenamiento.
     """
+    ap = _ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--data-dir", type=Path, required=True, metavar="~DIR",
+                    help="directorio con los archivos crudos de ISIC 2019 (zip de training; solo lectura)")
+    ap.add_argument("--splits-dir", type=Path, required=True, metavar="~DIR_CSV",
+                    help="directorio con train.csv y val.csv de la fase de splits")
+    ap.add_argument("--out-dir", type=Path, required=True, metavar="~DIR_OUT",
+                    help="directorio donde se escribe la copia multi-clase (<DIR_OUT>/{train,val}/<CLASE>/<image>.jpg)")
+    args = ap.parse_args()
+
     t0 = time.time()
     dfs = []
     for name in ("train", "val"):
-        dfs.append(pd.read_csv(SPLITS_DIR / f"{name}.csv"))
+        dfs.append(pd.read_csv(args.splits_dir / f"{name}.csv"))
     df = pd.concat(dfs, ignore_index=True)
     print(f"imágenes: {len(df)} (train+val)")
 
     # set para lookup O(1) de nombres del zip; abrir el zip una sola vez es más barato que por imagen
-    entries = set(zipfile.ZipFile(DATA_DIR / TRAIN_ZIP).namelist())
+    entries = set(zipfile.ZipFile(args.data_dir / TRAIN_ZIP).namelist())
     written, skipped = 0, []
-    with zipfile.ZipFile(DATA_DIR / TRAIN_ZIP) as zf:
+    with zipfile.ZipFile(args.data_dir / TRAIN_ZIP) as zf:
         for _, row in df.iterrows():
             image_id = row["image"]
             entry = f"{ZIP_PREFIX}{image_id}.jpg"
@@ -54,7 +129,7 @@ def main() -> int:
                 skipped.append(image_id)
                 continue
             label = row["label_full"]
-            dest = OUT_DIR / row["split"] / label / f"{image_id}.jpg"
+            dest = args.out_dir / row["split"] / label / f"{image_id}.jpg"
             dest.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(entry) as src:
                 img = Image.open(BytesIO(src.read())).convert("RGB")

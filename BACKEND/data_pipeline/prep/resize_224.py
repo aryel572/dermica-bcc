@@ -1,15 +1,35 @@
 #!/usr/bin/env python3
 """S3 paso 1: re-escalado del train+val a 224 px (preparación para entrenamiento).
 
-Lee DATA_CRUDA (solo lectura), los splits 70/20/10 de resultados/s2-splits/ y
-genera prepared/224/{train,val}/<BCC|NO_BCC>/<image>.jpg en resultados/s3-training/.
-El test de ISIC nunca se toca y TESIS no aparece (ya están excluidos de train/val).
+Propósito
+---------
+Lee las imágenes crudas de ISIC 2019 (solo lectura) y los CSV particionados
+70/20/10 de la fase de splits, y genera la copia de entrenamiento re-escalada
+a 224 px organizada por partición y clase binaria:
+`<out-dir>/{train,val}/<BCC|NO_BCC>/<image>.jpg`.
 
-Salida fuera del repo: resultados/s3-training/prepared/224/... (no se commitea).
+El TEST oficial de ISIC 2019 nunca se toca y TESIS tampoco aparece (sus ids
+ya fueron excluidos de train/val en la fase de splits).
+
+Entradas
+--------
+* `--data-dir ~DIR` (obligatorio): directorio con los archivos crudos de
+  ISIC 2019 (el zip de training). Origen EXTERNO al repo; SOLO LECTURA.
+* `--splits-dir ~DIR_CSV` (obligatorio): directorio con train.csv y val.csv
+  (columnas image, split, label_full, label_bcc, lesion_id).
+* `--out-dir ~DIR_OUT` (obligatorio): destino de la copia preparada.
+
+Salidas
+-------
+`<out-dir>/{train,val}/<BCC|NO_BCC>/<image>.jpg` (fuera del repo) y
+`<out-dir>/../resize-summary.json` con el recibo de la corrida.
 
 Uso:
-    uv run python resize_224.py            # escribe prepared/224/
-    uv run python resize_224.py --verificar  # comprueba conteos y legibilidad
+    uv run python resize_224.py --data-dir ~DIR --splits-dir ~DIR_CSV --out-dir ~DIR_OUT
+    uv run python resize_224.py --data-dir ~DIR --splits-dir ~DIR_CSV --out-dir ~DIR_OUT --verificar
+
+Cubre el trabajo de la fase S3, paso 1 — preparación de datos para el
+entrenamiento (CRISP-DM / MOBILE-D).
 """
 
 import argparse
@@ -24,21 +44,67 @@ from pathlib import Path
 import pandas as pd
 from PIL import Image
 
-APP_ROOT = Path(__file__).resolve().parents[4]  # .../APP_DERMICA
-DATA_DIR = APP_ROOT / "DATA_CRUDA"
-SPLITS_DIR = APP_ROOT / "resultados" / "s2-splits"
-DEFAULT_OUT = APP_ROOT / "resultados" / "s3-training" / "prepared" / "224"
+# Nombres canónicos de ISIC 2019 dentro del directorio de entrada. TRAIN_ZIP
+# es el archivo de origen; ZIP_PREFIX es la carpeta de primer nivel DENTRO
+# del zip (las entradas se direccionan como f"{ZIP_PREFIX}{image_id}.jpg").
+# Los consumen main() y verificar().
 TRAIN_ZIP = "ISIC_2019_Training_Input.zip"
 ZIP_PREFIX = "ISIC_2019_Training_Input/"
-IMG_SIZE = 224  # input del modelo MobileNetV3-Small (checkpoint imagenet)
-JPEG_Q = 85     # q85: suficiente para 224 px, ~35-50 KB por imagen
+IMG_SIZE = 224  # input del modelo MobileNetV3-Small (checkpoint imagenet); lo consumen main() y verificar()
+JPEG_Q = 85     # q85: suficiente para 224 px, ~35-50 KB por imagen; lo consume main()
+
+
+class _ParserEspanol(argparse.ArgumentParser):
+    """ArgumentParser con los mensajes de error en español neutro.
+
+    argparse redacta por defecto en inglés; el pipeline de la tesis es en
+    español, así que los fallos de invocación se traducen aquí (solo el
+    texto mostrado, nunca el comportamiento ni los códigos de salida:
+    sigue siendo exit 2 ante argumentos inválidos o faltantes).
+    """
+
+    def error(self, message: str) -> None:
+        """Imprime el uso y un error en español; sale con código 2.
+
+        Parámetros
+        ----------
+        message : str
+            Detalle redactado por argparse (se conserva el dato útil, p. ej.
+            los nombres de los flags faltantes, pero se enmarca en español).
+
+        Retorno
+        -------
+        No retorna: termina el proceso con exit 2.
+        """
+        self.print_usage(sys.stderr)
+        if "the following arguments are required" in message:
+            faltan = message.split(":", 1)[1].strip()
+            self.exit(2, f"ERROR: faltan los flags obligatorios: {faltan}\n"
+                         f"Consulta --help para la ayuda completa en español.\n")
+        self.exit(2, f"ERROR: {message}\nConsulta --help para la ayuda completa en español.\n")
 
 
 def load_splits(splits_dir: Path) -> pd.DataFrame:
-    """Concatena train y val (el test de ISIC y TESIS no entran en S3).
+    """Concatena train y val (el test de ISIC y la lista de exclusión no entran aquí).
 
-    Parámetros: splits_dir — directorio con train.csv/val.csv del step S2.
-    Retorna: DataFrame con image, split, label_full, label_bcc, lesion_id.
+    Parámetros
+    ----------
+    splits_dir : Path
+        Directorio con los CSV particionados de la fase de splits.
+
+    Retorno
+    -------
+    pd.DataFrame
+        DataFrame con image, split, label_full, label_bcc, lesion_id.
+
+    Errores
+    -------
+    FileNotFoundError / pd.errors.ParserError
+        Si falta train.csv o val.csv o no son parseables.
+
+    Efectos colaterales
+    -------------------
+    Ninguno (solo lectura).
     """
     dfs = []
     for name in ("train", "val"):
@@ -47,17 +113,33 @@ def load_splits(splits_dir: Path) -> pd.DataFrame:
 
 
 def main() -> int:
-    """Ejecuta el re-escalado binario de train+val (usada como paso previo de S3).
+    """Ejecuta el re-escalado binario de train+val (usada como paso previo del entrenamiento).
 
-    Retorna: 0 si no hubo imágenes saltadas, 1 si alguna falta en el zip.
-    Efectos colaterales: escribe prepared/224/{train,val}/<BCC|NO_BCC>/<image>.jpg;
-    con --verificar audita conteos y tamaño sin escribir.
+    Retorno
+    -------
+    int
+        0 si no hubo imágenes saltadas, 1 si alguna falta en el zip.
+
+    Errores
+    -------
+    zipfile.BadZipFile
+        Si el zip de entrada no es válido.
+
+    Efectos colaterales
+    -------------------
+    Escribe <out-dir>/{train,val}/<BCC|NO_BCC>/<image>.jpg y
+    resize-summary.json en el directorio padre de <out-dir>; con --verificar
+    audita conteos y tamaño sin escribir.
     """
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--data-dir", type=Path, default=DATA_DIR)
-    ap.add_argument("--splits-dir", type=Path, default=SPLITS_DIR)
-    ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
-    ap.add_argument("--verificar", action="store_true", help="solo audita la salida ya generada")
+    ap = _ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--data-dir", type=Path, required=True, metavar="~DIR",
+                    help="directorio con los archivos crudos de ISIC 2019 (zip de training; solo lectura)")
+    ap.add_argument("--splits-dir", type=Path, required=True, metavar="~DIR_CSV",
+                    help="directorio con train.csv y val.csv de la fase de splits")
+    ap.add_argument("--out-dir", type=Path, required=True, metavar="~DIR_OUT",
+                    help="directorio donde se escribe la copia preparada (<DIR_OUT>/{train,val}/<CLASE>/<image>.jpg)")
+    ap.add_argument("--verificar", action="store_true",
+                    help="solo audita la salida ya generada (sin escribir)")
     args = ap.parse_args()
 
     if args.verificar:
@@ -111,9 +193,25 @@ def main() -> int:
 def verificar(out_dir: Path, splits_dir: Path) -> int:
     """Verificación de conformidad: conteos + legalidad de archivos generados.
 
-    Parámetros: out_dir — dir ya generado (prepared/224); splits_dir — CSV 70/20/10.
-    Retorna: 0 si conteos coinciden con splits, 1 si falla alguna; no escribe nada.
-    Por qué comparar contra splits: garantiza 1:1 zip↔GT tras el filtrado (S1 lo hizo; se re-chequea).
+    Parámetros
+    ----------
+    out_dir : Path
+        Directorio ya generado con la copia preparada.
+    splits_dir : Path
+        Directorio con los CSV particionados de la fase de splits.
+
+    Retorno
+    -------
+    int
+        0 si los conteos coinciden con los CSV y cada muestra es legible y de
+        224×224; 1 si falla alguna compuerta. No escribe nada.
+
+    Efectos colaterales
+    -------------------
+    Ninguno (solo lectura).
+
+    Por qué comparar contra los CSV particionados: garantiza 1:1 zip↔GT tras el
+    filtrado (la auditoría previa lo hizo; se re-chequea aquí).
     """
     df = load_splits(splits_dir)
     problems = []
@@ -126,7 +224,7 @@ def verificar(out_dir: Path, splits_dir: Path) -> int:
             print(f"{estado} {split}/{label}: {found}/{expected}")
             if found != expected:
                 problems.append(f"{split}/{label}: {found} != {expected}")
-        # legibilidad: abre una imagen de cada split/claso
+        # legibilidad: abre una imagen de cada split/clase
         for label in ("BCC", "NO_BCC"):
             sample = next((out_dir / split / label).glob("*.jpg"), None)
             try:

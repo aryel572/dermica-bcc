@@ -11,9 +11,9 @@ NO se usa mobilenet_v3.preprocess_input ni /255 (el checkpoint de entrenamiento
 ya fue ajustado sobre [0,255]; cualquier otra escala rompería las métricas).
 
 Uso:
-    uv run python evaluate.py --data /content/test-224 \
-        --split-csv test.csv --model /content/1.0.0.keras --tag test --reports test-metrics.json
-    uv run python evaluate.py --verificar resultados/s4-eval/test-metrics.json
+    uv run python evaluate.py --data ~DIR_TEST --split-csv ~CSV \
+        --model ~KERAS --tag test --reports ~JSON
+    uv run python evaluate.py --verificar ~JSON
 """
 
 import argparse
@@ -37,7 +37,7 @@ CLASS_FOLDERS = ["NO_BCC", "BCC"]  # 0 = NO_BCC, 1 = BCC (mismo orden que S3)
 def cargar_modelos(model_path: Path):
     """Carga el .keras entrenado (float).
 
-    Parámetros: model_path — ruta local del .keras (descarga en el runner Colab).
+    Parámetros: model_path — ruta local del .keras (lo descarga el entorno de ejecución).
     Retorna: modelo tf.keras listo para inferencia.
     Por qué función propia: permite reutilizar la carga para float/int8 cuando
     llegue la cuantización (S4 paso 2).

@@ -1,20 +1,41 @@
 #!/usr/bin/env python3
 """S2 paso 2: split 70/20/10 estratificado por BCC/no-BCC y agrupado por lesion_id.
 
-Lee DATA_CRUDA (solo lectura) y resultados/s2-tesis/tesis_exclude.csv; nunca
-toca el TEST de ISIC 2019. Las imágenes sin lesion_id se tratan como singletons
-(cada imagen es su propio grupo). El muestreo usa la semilla 42 de
-BACKEND/data_pipeline/config.json, StratifiedGroupKFold(n_splits=10,
-shuffle=True, random_state=42) y una reunión de folds 7/2/1 para obtener
-train/val/test = 70/20/10.
+Propósito
+---------
+Construye la partición de entrenamiento del proyecto: 70 % train / 20 % val /
+10 % test, estratificada por la etiqueta binaria BCC/no-BCC y agrupada por
+`lesion_id` (ninguna lesión cae en dos particiones). Las imágenes sin
+`lesion_id` se tratan como singletons (cada imagen es su propio grupo). El
+muestreo usa la semilla fija de `config.json` (42),
+`StratifiedGroupKFold(n_splits=10, shuffle=True, random_state=42)` y una
+reunión de folds 7/2/1 para obtener train/val/test = 70/20/10.
 
-Artefactos (fuera del repo): train.csv, val.csv, test.csv, summary.json,
-README-corrida.md — columnas: image, split, label_full, label_bcc, lesion_id.
-Nunca escribe en DATA_CRUDA ni en TESIS/; solo lectura.
+Entradas
+--------
+* `--data-dir ~DIR` (obligatorio): directorio con los CSV crudos de
+  ISIC 2019 (GT y metadata de training). Origen EXTERNO al repo; solo lectura.
+* `--exclude-csv ~CSV` (obligatorio): lista de exclusión con columna
+  `image_id` producida por la fase de formación de subconjuntos; los ids
+  listados nunca entran al split.
+* `--out-dir ~DIR_OUT` (obligatorio): destino de los artefactos.
+
+Salidas (bajo `--out-dir`)
+--------------------------
+  train.csv, val.csv, test.csv   (columnas: image, split, label_full,
+                                  label_bcc, lesion_id)
+  summary.json                   recibo de la corrida (semilla, conteos,
+                                 ratios por partición, % BCC)
+  README-corrida.md              (lo escribe un paso posterior, no este script)
+
+Nunca toca el split TEST oficial de ISIC 2019 ni escribe en las fuentes de
+entrada: solo lee el GT/metadata de training y la lista de exclusión.
 
 Uso:
-    uv run python make_splits.py            # construye el split y verifica inline
-    uv run python make_splits.py --verificar resultados/s2-splits/summary.json
+    uv run python make_splits.py --data-dir ~DIR --exclude-csv ~CSV --out-dir ~DIR_OUT
+    uv run python make_splits.py --data-dir ~DIR --exclude-csv ~CSV --out-dir ~DIR_OUT --verificar ~DIR_OUT/summary.json
+
+Cubre el trabajo de la fase S2, paso 2 — preparación de datos (CRISP-DM).
 """
 
 import argparse
@@ -27,36 +48,76 @@ from pathlib import Path
 import pandas as pd
 from sklearn.model_selection import StratifiedGroupKFold
 
-# Raíz del monorepo APP_DERMICA: este archivo vive en BACKEND/data_pipeline/splits/,
-# por lo que parents[4] resuelve a .../APP_DERMICA (dos repos DATA_CRUDA y resultados/
-# cuelgan de ella; si el árbol del repo cambia, ajustar aquí).
-APP_ROOT = Path(__file__).resolve().parents[4]  # .../APP_DERMICA
-DEFAULT_DATA_DIR = APP_ROOT / "DATA_CRUDA"
-DEFAULT_OUT_DIR = APP_ROOT / "resultados" / "s2-splits"
-EXCLUDE_CSV = APP_ROOT / "resultados" / "s2-tesis" / "tesis_exclude.csv"
-# parents[1] = BACKEND/data_pipeline: config.json vive junto a audit/ y tesis/.
-CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
-GT_TRAIN = "ISIC_2019_Training_GroundTruth.csv"
-META_TRAIN = "ISIC_2019_Training_Metadata.csv"
+# config.json vive junto al código de este pipeline (data_pipeline/) y forma
+# parte del repo: es la única fuente de verdad para la semilla y los ratios
+# del split. Se resuelve desde __file__ para que el CWD no importe. La
+# consumen make(), verify_outputs() y las compuertas de ratios.
+CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
+GT_TRAIN = "ISIC_2019_Training_GroundTruth.csv"   # etiquetas one-hot de training (única fuente de etiquetas)
+META_TRAIN = "ISIC_2019_Training_Metadata.csv"    # metadata de training; aporta image↔lesion_id
 # Columnas one-hot de clases ISIC 2019 (un 1.0 por fila). El orden es fijo para
-# que idxmax(...) de más abajo sea determinista aunque haya empates.
+# que idxmax(...) de más abajo sea determinista aunque haya empates. La
+# consumen load_frames().
 CLASS_COLS = ["MEL", "NV", "BCC", "AK", "BKL", "DF", "VASC", "SCC", "UNK"]
-# Tasa BCC auditada del train de ISIC 2019 (13.12%, ver S1 en CRISP-DM):
-# referencia de sanity check, no compuerta de fallo (el split puede desviarse ±1%).
-BCC_TARGET_PCT = 13.12
+
+
+class _ParserEspanol(argparse.ArgumentParser):
+    """ArgumentParser con los mensajes de error en español neutro.
+
+    argparse redacta por defecto en inglés; el pipeline de la tesis es en
+    español, así que los fallos de invocación se traducen aquí (solo el
+    texto mostrado, nunca el comportamiento ni los códigos de salida:
+    sigue siendo exit 2 ante argumentos inválidos o faltantes).
+    """
+
+    def error(self, message: str) -> None:
+        """Imprime el uso y un error en español; sale con código 2.
+
+        Parámetros
+        ----------
+        message : str
+            Detalle redactado por argparse (se conserva el dato útil, p. ej.
+            los nombres de los flags faltantes, pero se enmarca en español).
+
+        Retorno
+        -------
+        No retorna: termina el proceso con exit 2.
+        """
+        self.print_usage(sys.stderr)
+        if "the following arguments are required" in message:
+            faltan = message.split(":", 1)[1].strip()
+            self.exit(2, f"ERROR: faltan los flags obligatorios: {faltan}\n"
+                         f"Consulta --help para la ayuda completa en español.\n")
+        self.exit(2, f"ERROR: {message}\nConsulta --help para la ayuda completa en español.\n")
 
 
 def load_frames(data_dir: Path) -> pd.DataFrame:
     """Carga y une GT + metadata de TRAIN de ISIC 2019 (solo lectura).
 
-    Params: data_dir — directorio con DATA_CRUDA (GT y metadata train).
-    Returns: DataFrame con columnas image, lesion_id, label_full, label_bcc, group.
+    Parámetros
+    ----------
+    data_dir : Path
+        Directorio con los CSV crudos de ISIC 2019 (GT y metadata de training).
+
+    Retorno
+    -------
+    pd.DataFrame
+        DataFrame con columnas image, lesion_id, label_full, label_bcc, group.
+
+    Errores
+    -------
+    FileNotFoundError / pd.errors.MergeError
+        Si falta un CSV o el merge GT↔metadata deja de ser 1:1.
+
+    Efectos colaterales
+    -------------------
+    Ninguno (solo lectura).
 
     El merge fuerza relación 1:1 GT↔metadata (validate="1:1"): si el dataset
     cambia y un image aparece duplicado o sin pareja, el fallo ocurre aquí y no
     silenciosamente más abajo. label_full se deriva del one-hot con idxmax;
     label_bcc es el binario BCC vs resto (problema del proyecto).
-   """
+    """
     gt = pd.read_csv(data_dir / GT_TRAIN)
     meta = pd.read_csv(data_dir / META_TRAIN)[["image", "lesion_id"]]
     df = pd.merge(gt, meta, on="image", validate="1:1")
@@ -74,6 +135,29 @@ def load_frames(data_dir: Path) -> pd.DataFrame:
 def build_splits(df: pd.DataFrame, seed: int) -> pd.Series:
     """Asigna cada imagen a train/val/test y devuelve la serie resultante.
 
+    Parámetros
+    ----------
+    df : pd.DataFrame
+        Salida de load_frames() tras excluir los ids de la lista de exclusión
+        (debe contener label_bcc y group).
+    seed : int
+        Semilla del proyecto (42, de config.json). Determina el shuffle del
+        StratifiedGroupKFold.
+
+    Retorno
+    -------
+    pd.Series
+        Serie indexada como df con valores en {"train", "val", "test"}.
+
+    Errores
+    -------
+    KeyError
+        Si df carece de las columnas label_bcc o group.
+
+    Efectos colaterales
+    -------------------
+    Ninguno (cálculo en memoria).
+
     Por qué StratifiedGroupKFold y no train_test_split×3: mantiene (a) balance
     de clases en cada fold y (b) grupos lesion_id cerrados (ninguna lesión cae
     en dos folds), dos garantías que splits independientes y aleatorios no dan.
@@ -82,7 +166,6 @@ def build_splits(df: pd.DataFrame, seed: int) -> pd.Series:
     asignación estratificada-agrupada reproducible y no dependiente del orden
     del CSV. Los 10 folds se reúnen 7 (train) / 2 (val) / 1 (test) tras el
     shuffle, lo que da 70/20/10 exacto y determinista.
-
     """
     skf = StratifiedGroupKFold(n_splits=10, shuffle=True, random_state=seed)
     assign = pd.Series("", index=df.index, dtype=object)
@@ -95,6 +178,20 @@ def build_splits(df: pd.DataFrame, seed: int) -> pd.Series:
 
 def ratios_report(df: pd.DataFrame) -> dict:
     """Reporte por partición: cardinalidad, BCC y % del total.
+
+    Parámetros
+    ----------
+    df : pd.DataFrame
+        DataFrame con columnas split y label_bcc (salida de make()).
+
+    Retorno
+    -------
+    dict
+        {split: {"imagenes": int, "bcc": int, "bcc_pct": float, "pct_total": float}}
+
+    Efectos colaterales
+    -------------------
+    Ninguno (cálculo en memoria).
 
     label_bcc es 0/1, por eso label_bcc.mean() es exactamente la tasa BCC de la
     partición (suma de BCC / total). Se reporta para auditar el balance tras el
@@ -115,13 +212,33 @@ def ratios_report(df: pd.DataFrame) -> dict:
 def verify(df: pd.DataFrame, cfg: dict, source_exclude: set) -> list[str]:
     """Compuertas inline del split; devuelve la lista de problemas (vacía si OK).
 
+    Parámetros
+    ----------
+    df : pd.DataFrame
+        DataFrame particionado (debe contener image, split, group).
+    cfg : dict
+        Contenido de config.json (usa cfg["splits"] para los objetivos de ratio).
+    source_exclude : set
+        Conjunto de image_id de la lista de exclusión; se usa para detectar
+        contaminación de subconjuntos excluidos en las particiones.
+
+    Retorno
+    -------
+    list[str]
+        Descripciones de los problemas detectados; [] si todo cuadra.
+
+    Efectos colaterales
+    -------------------
+    Imprime avisos (no fallos) si una partición se desvía >1 p.p. del objetivo.
+
     Cada compuerta cubre un modo de fuga/defecto distinto:
     - intersección de imágenes entre particiones -> misma foto en train y val/test
       (fuga directa de datos): debe ser ∅.
     - lesion_id compartido entre particiones -> imágenes de la misma lesión en
       distintas particiones, el clásico fallo de "multiple image lesions" de
       ISIC; garantiza que val/test miden generalización real.
-    - TESIS presente -> imágenes del conjunto excluido contaminando train/val/test.
+    - subconjuntos excluidos presentes -> imágenes de la lista de exclusión
+      contaminando train/val/test.
     - image_id duplicados -> cardinalidad inflada; rompe ratios y métricas.
     - ratios 70/20/10: se avisa (no se falla) si alguna partición se desvía
       >1 p.p.; el tamaño exacto depende del dataset y no debe ser una compuerta dura.
@@ -146,7 +263,7 @@ def verify(df: pd.DataFrame, cfg: dict, source_exclude: set) -> list[str]:
 
     tesis_leak = source_exclude & set(df["image"])
     if tesis_leak:
-        problems.append(f"{len(tesis_leak)} imágenes de TESIS presentes en una partición")
+        problems.append(f"{len(tesis_leak)} imágenes de la lista de exclusión presentes en una partición")
 
     if len(df) != len(set(df["image"])):
         problems.append("hay image_id duplicados")
@@ -163,9 +280,25 @@ def verify(df: pd.DataFrame, cfg: dict, source_exclude: set) -> list[str]:
 def write_outputs(df: pd.DataFrame, out_dir: Path) -> dict:
     """Escribe train/val/test.csv con el contrato de columnas del pipeline.
 
+    Parámetros
+    ----------
+    df : pd.DataFrame
+        DataFrame particionado con image, split, label_full, label_bcc, lesion_id.
+    out_dir : Path
+        Directorio de destino; se crea si no existe.
+
+    Retorno
+    -------
+    dict
+        {split: n_imágenes_escritas}.
+
+    Efectos colaterales
+    -------------------
+    Crea out_dir y escribe train.csv, val.csv y test.csv.
+
     lesion_id ausente se escribe como cadena vacía (no "NaN" ni null), de modo
-    que el consumidor (S2-paso 3 / entrenamiento) siempre vea strings. El orden
-    de columnas es el contrato: image, split, label_full, label_bcc, lesion_id.
+    que el consumidor (entrenamiento) siempre vea strings. El orden de columnas
+    es el contrato: image, split, label_full, label_bcc, lesion_id.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     counts = {}
@@ -180,24 +313,44 @@ def write_outputs(df: pd.DataFrame, out_dir: Path) -> dict:
 def make(data_dir: Path, out_dir: Path, exclude_csv: Path) -> int:
     """Construye el split y escribe artefactos en out_dir.
 
+    Parámetros
+    ----------
+    data_dir : Path
+        Directorio con los CSV crudos de ISIC 2019 (GT y metadata de training).
+    out_dir : Path
+        Destino de los artefactos (train/val/test.csv, summary.json).
+    exclude_csv : Path
+        CSV con columna `image_id` cuyos ids se excluyen del split.
+
+    Retorno
+    -------
+    int
+        0 si las compuertas inline pasaron y los artefactos se escribieron;
+        1 si falta la lista de exclusión o cualquier compuerta falló.
+
+    Efectos colaterales
+    -------------------
+    Crea out_dir y escribe los CSV particionados y summary.json (solo si todas
+    las compuertas pasan). Nunca escribe en data_dir.
+
     Contrato: si cualquier compuerta inline falla, NO se escribe ningún
     artefacto (evita summary/CSVs engañosos a medio construir); mensajes de
-    error listan los problemas uno a uno. Datos crudos = solo lectura.
+    error listan los problemas uno a uno. Los datos crudos son solo lectura.
     """
     t0 = time.time()
     cfg = json.loads(CONFIG_PATH.read_text())
     seed = int(cfg["seed"])
 
     if not exclude_csv.exists():
-        print(f"ERROR: no existe la lista de exclusión TESIS: {exclude_csv}")
+        print(f"ERROR: no existe la lista de exclusión: {exclude_csv}")
         return 1
     exclude = set(pd.read_csv(exclude_csv)["image_id"])
-    print(f"exclusión TESIS: {len(exclude)} imágenes")
+    print(f"exclusión: {len(exclude)} imágenes")
 
     df = load_frames(data_dir)
     before = len(df)
     df = df[~df["image"].isin(exclude)].reset_index(drop=True)
-    print(f"train GT {before} -> sin TESIS {len(df)}")
+    print(f"train GT {before} -> sin exclusión {len(df)}")
 
     df["split"] = build_splits(df, seed)
 
@@ -232,13 +385,37 @@ def make(data_dir: Path, out_dir: Path, exclude_csv: Path) -> int:
     return 0
 
 
-def verify_outputs(summary_path: Path) -> int:
+def verify_outputs(summary_path: Path, exclude_csv: Path) -> int:
     """Lee artefactos ya escritos y verifica conformidad (no escribe nada).
+
+    Parámetros
+    ----------
+    summary_path : Path
+        Ruta al summary.json producido por make(); su directorio padre se
+        toma como out_dir para localizar train/val/test.csv.
+    exclude_csv : Path
+        CSV con columna `image_id` que ninguna partición puede contener;
+        si no existe, la compuerta de exclusión se omite con aviso.
+
+    Retorno
+    -------
+    int
+        0 si todos los chequeos pasan, 1 en caso contrario.
+
+    Errores
+    -------
+    json.JSONDecodeError / pd.errors.ParserError / KeyError
+        Si summary.json o los CSV particionados no son válidos o les faltan
+        claves (el mensaje lo delata tal cual).
+
+    Efectos colaterales
+    -------------------
+    Ninguno (solo lectura). Imprime PASS/FAIL por compuerta.
 
     Reconstruye el concat train+val+test y comprueba: cardinalidad y
     cardinalidades por partición contra summary.json, valores de split válidos,
-    columnas esperadas, TESIS ausente, image únicos y ninguna lesión en más de
-    un split; ratios con aviso ±1%. Devuelve 0/1 según OK/FALLO.
+    columnas esperadas, exclusiones ausentes, image únicos y ninguna lesión en
+    más de un split; ratios con aviso ±1%.
     """
     cfg = json.loads(CONFIG_PATH.read_text())
     if not summary_path.exists():
@@ -248,8 +425,7 @@ def verify_outputs(summary_path: Path) -> int:
     out_dir = summary_path.parent
     df = pd.concat([pd.read_csv(out_dir / f"{p}.csv") for p in ("train", "val", "test")],
                    ignore_index=True)
-    exclude_path = EXCLUDE_CSV
-    exclude = set(pd.read_csv(exclude_path)["image_id"]) if exclude_path.exists() else set()
+    exclude = set(pd.read_csv(exclude_csv)["image_id"]) if exclude_csv.exists() else set()
 
     problems = []
     if len(df) != s["candidatos"]:
@@ -266,7 +442,7 @@ def verify_outputs(summary_path: Path) -> int:
         if not g.columns.isin(["image", "split", "label_full", "label_bcc", "lesion_id"]).all():
             problems.append(f"{p}: columnas inesperadas")
     if exclude & set(df["image"]):
-        problems.append("TESIS presente en una partición")
+        problems.append("lista de exclusión presente en una partición")
     images = df["image"]
     if len(images) != images.nunique():
         problems.append("image duplicados")
@@ -297,15 +473,18 @@ def main() -> int:
     Contrato: make() es la única ruta que escribe artefactos; verificar no
     escribe. Código de retorno 0 = OK, 1 = fallo (errores en pantalla).
     """
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
-    ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
-    ap.add_argument("--exclude-csv", type=Path, default=EXCLUDE_CSV)
-    ap.add_argument("--verificar", type=Path, default=None,
+    ap = _ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--data-dir", type=Path, required=True, metavar="~DIR",
+                    help="directorio con los CSV crudos de ISIC 2019 de training (GT y metadata)")
+    ap.add_argument("--out-dir", type=Path, required=True, metavar="~DIR_OUT",
+                    help="directorio donde se escriben train/val/test.csv y summary.json")
+    ap.add_argument("--exclude-csv", type=Path, required=True, metavar="~CSV",
+                    help="CSV con columna image_id a excluir del split (lista de subconjuntos excluidos)")
+    ap.add_argument("--verificar", type=Path, default=None, metavar="~JSON",
                     help="ruta a summary.json; corre verificaciones sin escribir")
     args = ap.parse_args()
     if args.verificar is not None:
-        return verify_outputs(args.verificar)
+        return verify_outputs(args.verificar, args.exclude_csv)
     return make(args.data_dir, args.out_dir, args.exclude_csv)
 
 
