@@ -19,6 +19,15 @@ Los JSON se escriben con el mismo script en dos ubicaciones posibles:
 
 Nada de imágenes se copia ni se commitea; este script solo produce texto.
 
+Quién consume sus salidas
+-------------------------
+* La app móvil en el modo "Subir subconjunto": lee el ground_truth.json de la
+  carpeta del subconjunto para contrastar los indicadores TP/TN/FP/FN que
+  calcula al terminar el procesamiento.
+* El registro versionado del frontend / la evidencia de la tesis: el layout
+  plano deja un `<subset_id>.json` por subconjunto como referencia
+  persistente de las etiquetas de demostración.
+
 Entradas
 --------
 * `--manifest ~CSV` (obligatorio): tesis_manifest.csv producido por la fase
@@ -71,8 +80,12 @@ def cargar_manifest(ruta_manifest: Path) -> dict[str, dict[str, str]]:
     Efectos colaterales
     -------------------
     Ninguno (solo lectura).
+
+    Globales
+    --------
+    Ninguna (no lee config ni entorno; todo llega por `ruta_manifest`).
     """
-    subconjuntos: dict[str, dict[str, str]] = {}
+    subconjuntos: dict[str, dict[str, str]] = {}   # {subset_id: {nombre_de_archivo: etiqueta}} — manifiesto agrupado por subconjunto
     with ruta_manifest.open(newline='', encoding='utf-8') as f:
         for fila in csv.DictReader(f):
             etiqueta = (fila.get('label_full') or '').strip()
@@ -99,6 +112,11 @@ def main() -> None:
         Si el manifiesto no existe.
 
     No retorna nada (exit 0 implícito tras escribir los JSON).
+
+    Globales
+    --------
+    Ninguna (no toca config ni globales del módulo; el módulo no define
+    constantes).
     """
     parser = ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--manifest', type=Path, required=True, metavar='~CSV',

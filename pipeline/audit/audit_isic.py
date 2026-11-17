@@ -40,6 +40,13 @@ Salidas (todas bajo `--out-dir`)
   figuras/faltantes.png barras de valores ausentes
   README-corrida.md  notas legibles de la corrida con los comandos exactos
 
+Quién consume sus salidas: la tesis del proyecto (S1 — entendimiento de
+datos, evidencia primaria del dataset) y la fase S2, que se apoya en los
+invariantes verificados aquí (1:1 zip↔GT, CRC OK, etiqueta única) y en
+clases.csv/lesion_id.csv para diseñar el split agrupado por lesion_id; el
+archivo dimensiones.csv documenta la elección de 224 px como entrada del
+modelo.
+
 El dataset crudo nunca se extrae (los zips se leen en streaming), el script
 nunca escribe en el directorio de entrada y el split TEST de ISIC 2019 no se
 usa para nada que no sea auditarlo: la partición de training, agrupada por
@@ -89,8 +96,8 @@ META_TEST = "ISIC_2019_Test_Metadata.csv"         # metadata de test (sin lesion
 # Tamaños oficiales de las tablas ISIC 2019. Codificarlos convierte la
 # auditoría de un "generador de reportes" en una compuerta real: cualquier
 # imagen faltante o sobrante revienta la corrida en vez de propagarse en
-# silencio hacia los splits y subconjuntos. La consume audit_split() en sus
-# asserts duros.
+# silencio hacia los splits y subconjuntos. La consumen audit_split() (asserts
+# duros) y main() (autocomprobación final del JSON re-leído).
 EXPECTED = {"training": 25331, "test": 8238}
 
 
@@ -142,6 +149,10 @@ def unzip_test(zip_path: Path) -> tuple[bool, str, float]:
     -------------------
     Lanza un subproceso (`unzip -t`). No se crean ni borran archivos; el
     archivo se abre en solo lectura.
+
+    Globales
+    --------
+    Ninguna (depende solo de `time` y `subprocess`).
     """
     start = time.perf_counter()
     proc = subprocess.run(["unzip", "-t", str(zip_path)], capture_output=True, text=True)
@@ -178,6 +189,10 @@ def zip_entries(zip_path: Path) -> tuple[list[str], int]:
     -------------------
     Lee solo el directorio central; no hay verificación CRC aquí (eso es
     trabajo de unzip_test) y no se descomprime ningún byte de imagen.
+
+    Globales
+    --------
+    Ninguna (depende solo de `zipfile` y `pathlib`).
     """
     with zipfile.ZipFile(zip_path) as zf:
         names = zf.namelist()
@@ -210,6 +225,11 @@ def load_gt(csv_path: Path) -> tuple[pd.DataFrame, list[str]]:
     Efectos colaterales
     -------------------
     Ninguno (parseo del CSV en solo lectura).
+
+    Globales
+    --------
+    `ISIC_LABELS` (importada de dermica_core.labels; única fuente del orden
+    de columnas one-hot).
     """
     gt = pd.read_csv(csv_path)
     class_cols = [c for c in ISIC_LABELS if c in gt.columns]
@@ -249,6 +269,10 @@ def class_distribution(gt: pd.DataFrame, class_cols: list[str]) -> pd.DataFrame:
     Efectos colaterales
     -------------------
     Ninguno más allá de construir el pequeño dataframe de resultados.
+
+    Globales
+    --------
+    Ninguna (la lógica es autocontenida: usa `pd` y el assert inline).
     """
     counts = gt[class_cols].sum().astype(int)
     total = int(counts.sum())
@@ -291,8 +315,9 @@ def audit_split(
         Nombre del split, exactamente "training" u "test"; indexa EXPECTED y
         se refleja en el informe.
     data_dir : Path
-        Directorio raíz del dataset crudo (se usa para reportar rutas; las
-        rutas de zip/gt/meta se pasan explícitamente como rutas absolutas).
+        Sin uso dentro de esta función (se conserva en la firma por simetría
+        con el resto del pipeline): las rutas de zip/gt/meta se pasan
+        explícitamente como rutas absolutas.
     zip_path : Path
         El *_Input.zip de ISIC 2019 de este split.
     gt_path : Path
@@ -330,6 +355,10 @@ def audit_split(
     toda la corrida ante cualquier violación de invariante; es intencional:
     un invariante fallido significa que el dataset en disco no es lo que la
     tesis asume.
+
+    Globales
+    --------
+    `EXPECTED` (conteos oficiales ISIC 2019 del split; la indexa por `name`).
     """
     zip_start = time.perf_counter()
     ids_zip, total_entries = zip_entries(zip_path)
@@ -424,6 +453,11 @@ def sample_dimensions(splits: dict, data_dir: Path, out_dir: Path, sample_per_sp
     Abre y decodifica (cabeceras + píxeles) las imágenes muestreadas desde
     dentro de los zips vía zf.open; escribe dimensiones.csv. NO extrae los
     archivos.
+
+    Globales
+    --------
+    `SAMPLE_SEED` (semilla fija del muestreo; misma constante que el resto
+    de la tesis).
     """
     rng = random.Random(SAMPLE_SEED)
     rows = []
@@ -463,6 +497,11 @@ def main() -> int:
     auditoria.json, clases.csv, lesion_id.csv, dimensiones.csv,
     figuras/*.png y README-corrida.md; imprime el progreso por stdout.
     Nunca escribe en --data-dir.
+
+    Globales
+    --------
+    `EXPECTED`, `GT_*`, `META_*`, `TRAIN_ZIP`, `TEST_ZIP` (constantes del
+    módulo); la autocomprobación final reutiliza `EXPECTED`.
     """
     ap = ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data-dir", type=Path, required=True, metavar="~DIR",
@@ -678,6 +717,11 @@ def verificar(audit_path: Path, data_dir: Path) -> int:
     Efectos colaterales
     -------------------
     Solo lectura: hashea los CSV y los artefactos listados en el JSON.
+
+    Globales
+    --------
+    Ninguna (los conteos oficiales están escritos literales en los checks,
+    no vía EXPECTED).
     """
     audit_path = audit_path.resolve()
     out_dir = audit_path.parent
@@ -697,7 +741,7 @@ def verificar(audit_path: Path, data_dir: Path) -> int:
                 "lesion_id_training", "dimensiones_muestra", "invariantes", "artefactos"]:
         check(f"clave '{key}' presente", key in audit)
 
-    inv = audit.get("invariantes", {})
+    inv = audit.get("invariantes", {})  # invariantes serializados al generar; se comparan contra los oficiales
     check("train = 25.331 imágenes", inv.get("train_imagenes") == 25331)
     check("test = 8.238 imágenes", inv.get("test_imagenes") == 8238)
     check("duplicados GT == 0", inv.get("duplicados_gt") == 0)
@@ -744,6 +788,10 @@ def write_readme(out_dir: Path, audit: dict) -> None:
     Efectos colaterales
     -------------------
     Escribe out_dir/README-corrida.md.
+
+    Globales
+    --------
+    Ninguna (todo el contenido sale del dict `audit` recibido por parámetro).
     """
     h = audit["hashes_sha256_csv"]
     t = audit["tiempos_seg"]

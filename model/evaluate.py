@@ -1,6 +1,37 @@
 #!/usr/bin/env python3
 """S4 paso 2: evaluación formal sobre TEST (una sola vez).
 
+Propósito
+---------
+Evalúa el modelo released del proyecto sobre el split TEST (una sola pasada,
+sin retocar nada) y escribe el JSON de métricas finales: la evidencia numérica
+del release 1.0.0.
+
+Qué recibe
+----------
+Flags de CLI (origen: línea de comandos):
+    --data ~DIR      Carpeta TEST con subcarpetas BCC/NO_BCC de imágenes 224 (obligatoria
+                     salvo en modo --verificar).
+    --model ~KERAS   Ruta local del .keras released (float). Sin ella ni --tflite, error.
+    --tflite ~PATH   Alternativa int8: evalúa un .tflite y esta opción manda sobre --model.
+    --split-csv      CSV del split evaluado (informativo; aceptado pero hoy no se usa en el código).
+    --tag            Etiqueta del split en el JSON (default "test"; p.ej. "val").
+    --reports ~JSON  Ruta del JSON de salida (el padre se crea si falta); además se imprime a stdout.
+    --verificar ~JSON  Modo auditoría: no evalúa nada, solo chequea coherencia del JSON dado.
+El modelo no lo descarga este script: la ruta local la resuelve el operador/entorno.
+
+Qué produce
+-----------
+JSON de métricas (stdout y, opcionalmente, --reports) con la AUPRC primaria,
+recall, especificidad, balanced_acc, f2 y precision del split, conteos
+TP/FP/TN/FN, el preprocess usado y la descripción del modelo (float o int8).
+
+Quién consume
+-------------
+Nadie importa este módulo. Lo ejecuta el operador; su salida la audita
+`verificar()` (mismo módulo, modo --verificar) y queda como evidencia del
+release en la documentación de S4.
+
 Evalúa el modelo `1.0.0.keras` de dermica-models sobre el split TEST (2.488
 imágenes, BCC 317) y escribe metrics JSON. TEST es de una sola pasada: el
 modelo se fijó en S3 y nunca se tocó esta partición.
@@ -14,6 +45,8 @@ Uso:
     uv run python evaluate.py --data ~DIR_TEST --split-csv ~CSV \
         --model ~KERAS --tag test --reports ~JSON
     uv run python evaluate.py --verificar ~JSON
+
+Fase: S4 (CRISP-DM Evaluation).
 """
 
 import argparse
@@ -29,16 +62,22 @@ import tensorflow as tf
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metrics
 
-IMG_SIZE = 224   # mismo input que el entrenamiento
-BATCH_SIZE = 32  # tamaño de inferencia
-CLASS_FOLDERS = ["NO_BCC", "BCC"]  # 0 = NO_BCC, 1 = BCC (mismo orden que S3)
+# Origen: mismo input que el entrenamiento en S3 (contrato 224 px). Nota: hoy no se
+# referencia en este módulo (las imágenes ya llegan a 224); se mantiene por paridad
+# con el pipeline de entrenamiento, no por un consumidor.
+IMG_SIZE = 224
+BATCH_SIZE = 32  # tamaño de inferencia; consumo: ds.batch() en la rama float (el modo int8 procesa imagen a imagen)
+CLASS_FOLDERS = ["NO_BCC", "BCC"]  # 0 = NO_BCC, 1 = BCC (mismo orden que S3 y que class_weight); consumidor: evaluar()
 
 
 def cargar_modelos(model_path: Path):
     """Carga el .keras entrenado (float).
 
-    Parámetros: model_path — ruta local del .keras (lo descarga el entorno de ejecución).
-    Retorna: modelo tf.keras listo para inferencia.
+    Parámetros: model_path — ruta local del .keras (lo descarga el entorno/operador;
+                este módulo nunca va al remoto por su cuenta).
+    Retorna: modelo tf.keras listo para inferencia (compile=False: no requiere loss).
+    Lanza: error de tf.keras si el archivo no es un modelo Keras válido o no existe.
+    Globales: ninguna.
     Por qué función propia: permite reutilizar la carga para float/int8 cuando
     llegue la cuantización (S4 paso 2).
     """
@@ -49,8 +88,12 @@ def cargar_modelos(model_path: Path):
 def evaluar(data_dir: Path):
     """Lista archivos del directorio y devuelve (paths, y_true).
 
-    Parámetros: data_dir — carpeta con subcarpetas BCC/NO_BCC de imágenes 224.
-    Retorna: (lista_paths, lista_y_true) alineados.
+    Parámetros: data_dir — Path con subcarpetas BCC/NO_BCC de imágenes 224.
+    Retorna: (lista_paths, lista_y_true) alineados; y_true es np.ndarray int
+             (0 = NO_BCC, 1 = BCC) en el orden NO_BCC → BCC, sorted por carpeta.
+    Lanza: nada propio; una subcarpeta BCC/NO_BCC ausente da lista vacía
+           (el llamador detecta `if not paths` y falla con mensaje claro).
+    Globales: CLASS_FOLDERS (orden fijo 0/1).
     Por qué listar archivos directamente: no hay loader fancy; sólo la correlación
     nombre→carpeta importa, así el resultado depende del contenido real en disco.
     """
@@ -63,8 +106,12 @@ def evaluar(data_dir: Path):
 
 
 def _parse(path, label):
-    """Lee y normaliza una imagen SIN normalizar (mismo pipeline que S3).
+    """Lee y decodifica una imagen SIN normalizar (mismo pipeline que S3).
 
+    Parámetros: path — tensor/string con la ruta de la imagen; label — etiqueta 0/1.
+    Retorna: tuple (img, label) con img float32 en [0,255] shape (H, W, 3).
+    Lanza: error de tf.io si el archivo no existe o no es un JPEG decodificable.
+    Globales: ninguna.
     Por qué sin /255: image_dataset_from_directory en train_bcn NO normaliza;
     el modelo se fine-tuneó sobre valores [0,255] y debe verse igual en eval.
     """
@@ -74,10 +121,18 @@ def _parse(path, label):
 
 
 def main() -> int:
-    """Ejecuta la evaluación sobre --data con --model y escribe --reports.
+    """Ejecuta la evaluación sobre --data con --model/--tflite y escribe --reports.
 
+    Parámetros: ninguno (los flags llegan por línea de comandos vía argparse);
+    `description=__doc__` publica el docstring del módulo como ayuda -h.
     --verificar no escribe; solo audita el JSON ya generado.
-    Retorna: 0 OK, 1 error o args inconsistentes.
+    Retorna: 0 OK, 1 error o args inconsistentes (modelo/data ausentes o JSON inexistente).
+    Lanza: propaga errores de inferencia (modelo corrupto, TFLite inválido, OOM);
+           los flags incompletos SÍ devuelven 1 con mensaje claro en stdout.
+    Globales: BATCH_SIZE (rama float), CLASS_FOLDERS vía evaluar().
+    Notas de la rama int8: `in_det`/`out_det` son los descriptores del tensor;
+    la quantization (scale, zero_point) del int8 se aplica a mano porque el
+    modelo float16/int8 del release no lleva preprocesamiento dentro.
     """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--data", type=Path, default=None,
@@ -120,6 +175,7 @@ def main() -> int:
         interpreter.allocate_tensors()
         in_det = interpreter.get_input_details()[0]
         out_det = interpreter.get_output_details()[0]
+        # scale/zp del int8 (vienen del descriptor del tensor; si no hay cuantización, (0.0, 0))
         in_scale, in_zp = in_det.get("quantization", (0.0, 0))
         out_scale, out_zp = out_det.get("quantization", (0.0, 0))
         ys = []
@@ -133,9 +189,10 @@ def main() -> int:
             interpreter.invoke()
             raw = interpreter.get_tensor(out_det["index"]).reshape(-1).astype(np.float32)
             if out_det["dtype"] == np.int8 and out_scale not in (None, 0.0, 1.0):
-                raw = (raw - out_zp) * out_scale  # int8 cuantizado → desnormaliza
+                raw = (raw - out_zp) * out_scale  # int8 cuantizado → desnormaliza; si no, las métricas saldrían fuera de [0,1]
             ys.append(float(raw[0]))
         y_score = np.asarray(ys, dtype=np.float32)
+        # descripción del artefacto y preprocess usados; quedan grabados en el JSON (auditoría del release)
         modelo_desc = "MobileNetV3-Small int8 (tflite), 1.0.0"
         preproc = "decode_jpeg→float32[0,255]→int8(q)"
     else:
@@ -149,7 +206,7 @@ def main() -> int:
     y_score = np.asarray(y_score).reshape(-1).tolist()
 
     rep = metrics.reporte(y_true.tolist(), y_score)
-    n_bcc = int(np.sum(y_true == 1))
+    n_bcc = int(np.sum(y_true == 1))  # positivos reales del TEST (denominador clínico: 317 en 1.0.0)
     out = {
         "version": "1.0.0",
         "split": args.tag,
@@ -177,9 +234,13 @@ def main() -> int:
 def verificar(json_path: Path) -> int:
     """Audita el JSON de métricas buscando incoherencias internas.
 
-    Compruebas: n_test == tp+fp+tn+fn, tp+fn == bcc_test, ratios en [0, 1],
-    valores redondeados a 4 decimales; VERIFICACIÓN: OK/FALLO.
-    No escribe nada.
+    Parámetros: json_path — Path del JSON generado por la rama de evaluación.
+    Retorna: 0 si el JSON es internamente coherente; 1 en caso contrario (o si no existe).
+    Lanza: nada propio; un JSON malformado hace fallar json.loads (excepción propaga).
+    Globales: ninguna.
+    Comprueba: n_test == tp+fp+tn+fn, tp+fn == bcc_test, y
+    auprc/recall/especificidad/balanced_acc/f2/precision dentro de [0, 1];
+    VERIFICACIÓN: OK/FALLO. No escribe nada: es una auditoría de solo lectura.
     """
     if not json_path.exists():
         print(f"FAIL: no existe {json_path}")

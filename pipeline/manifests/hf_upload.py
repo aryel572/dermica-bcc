@@ -46,6 +46,16 @@ Un único commit atómico en el git-remote `dermica-dataset` (tipo dataset) y un
 lista de archivos esperados. Con `--verificar` no se escribe nada: solo se
 audita el repo remoto.
 
+Quién consume sus salidas
+-------------------------
+* El git-remote `dermica-dataset` → las fases posteriores del pipeline
+  (modelado y evaluación) descargan de ahí los manifiestos y la
+  configuración; la app móvil no lee este repositorio.
+* `upload-log.json` → la evidencia de S2 paso 3 (hash del commit, URL del
+  repo y lista de archivos esperados) y la auditoría manual posterior.
+* `--verificar` → el equipo, antes/después de cada corrida, para corroborar
+  el estado del repo remoto sin riesgo de escribir.
+
 Uso:
     uv run python hf_upload.py --splits-dir ~DIR_SPLITS --tesis-dir ~DIR_TESIS --out-dir ~DIR_OUT
     uv run python hf_upload.py --splits-dir ~DIR_SPLITS --tesis-dir ~DIR_TESIS --out-dir ~DIR_OUT --verificar
@@ -70,6 +80,7 @@ from huggingface_hub.utils import HfHubHTTPError
 # niveles por debajo de la raíz). Solo se usa para el default repo-relativo de
 # --env-file (el .env del repo, gitignored); nada del repo se modifica.
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+# La consume ENV_POR_DEFECTO (default repo-relativo de --env-file en main()).
 ENV_POR_DEFECTO = REPO_ROOT / ".env"
 # config.json vive junto al código de este pipeline (pipeline/) y forma
 # parte del repo: se resuelve desde __file__ para que el CWD no importe.
@@ -122,6 +133,10 @@ def read_env(env_path: Path) -> dict:
     Efectos colaterales
     -------------------
     Ninguno (solo lectura; jamás imprime valores).
+
+    Globales
+    --------
+    Ninguna (depende solo de `Path` y de texto; jamás imprime valores).
     """
     env = {}
     if not env_path.exists():
@@ -157,6 +172,11 @@ def load_credentials(env_file: Path) -> tuple[str, str]:
     SystemExit
         Código 2 si falta HF_TOKEN, HF_OWNER o HF_REPO_DATASET en ambas
         fuentes (error de entorno/configuración).
+
+    Globales
+    --------
+    Ninguna del módulo (lee el entorno del proceso `os.environ` y el archivo
+    `--env-file`; el archivo nunca se imprime ni se copia).
     """
     file_env = read_env(env_file)
     merged = {**file_env, **{k: v for k, v in os.environ.items() if k in ("HF_TOKEN", "HF_OWNER", "HF_REPO_DATASET")}}
@@ -188,6 +208,12 @@ def collect_files(splits_dir: Path, tesis_dir: Path) -> list[tuple[str, Path]]:
     SystemExit
         Código 2 (entorno) si falta algún archivo fuente: mejor detenerse
         antes de commitear a medias que dejar el repo remoto inconsistente.
+
+    Globales
+    --------
+    `SPLITS_FILES`, `TESIS_FILES`, `SPLITS_PREFIX`, `TESIS_PREFIX` (qué sube
+    y bajo qué carpeta remota), `CONFIG_PATH` (config.json como contrato
+    congelado) y `DATASET_CARD` (tarjeta versionada en el repo).
     """
     files = []
     for name in SPLITS_FILES:
@@ -235,8 +261,13 @@ def upload(api: HfApi, repo_id: str, splits_dir: Path, tesis_dir: Path) -> dict:
     `create_commit` con 7 operaciones Add: una sola llamada API para todo el
     conjunto (upload_folder generaría más tráfico y menos control sobre qué
     entra exactamente). El mensaje va en español neutro, coherente con el repo.
+
+    Globales
+    --------
+    Ninguna propia (delega en collect_files(); las operaciones Add son del
+    cliente HF).
     """
-    operations = [
+    operations = [   # 7 operaciones Add (3 splits + 2 manifiestos TESIS + config + tarjeta) en un único commit atómico
         CommitOperationAdd(path_in_repo=repo_path, path_or_fileobj=str(local))
         for repo_path, local in collect_files(splits_dir, tesis_dir)
     ]
@@ -275,6 +306,11 @@ def verificar(api: HfApi, repo_id: str) -> int:
     imagen; extra no bloquea (aviso informativo). La tarjeta lleva
     `license: cc-by-nc-4.0` en front-matter — convención de HF para metadatos
     de licencia; sin ella, hub avisa de metadata vacía aunque el contenido sea válido.
+
+    Globales
+    --------
+    `EXPECTED` (lista blanca del conjunto exacto de archivos remotos) y
+    `FORBIDDEN_SUFFIXES` (extensiones de imagen prohibidas en el repo).
     """
     problems = []
     try:
@@ -286,13 +322,13 @@ def verificar(api: HfApi, repo_id: str) -> int:
         return 1
 
     files = set(api.list_repo_files(repo_id, repo_type="dataset"))
-    missing = EXPECTED - files
+    missing = EXPECTED - files   # lista blanca incompleta: bloquea (exit 1)
     if missing:
         problems.append(f"faltan archivos: {', '.join(sorted(missing))}")
-    extra = files - EXPECTED
+    extra = files - EXPECTED   # ruido en el repo: aviso informativo, no bloquea
     if extra:
         print(f"AVISO: archivos extra en el repo (no bloquean): {', '.join(sorted(extra))}")
-    imgs = sorted(f for f in files if Path(f).suffix.lower() in FORBIDDEN_SUFFIXES)
+    imgs = sorted(f for f in files if Path(f).suffix.lower() in FORBIDDEN_SUFFIXES)   # cero imágenes: compuerta dura del repo del dataset
     if imgs:
         problems.append(f"se detectaron imágenes en el repo: {', '.join(imgs)}")
 
@@ -315,6 +351,11 @@ def main() -> int:
     -------------------
     Sin --verificar: crea el commit en el git-remote y escribe
     <out-dir>/upload-log.json. Con --verificar: no escribe nada.
+
+    Globales
+    --------
+    `ENV_POR_DEFECTO` (default repo-relativo de `--env-file`: el .env del
+    repo, resuelto desde __file__; el archivo nunca se imprime ni se copia).
     """
     ap = ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--splits-dir", type=Path, required=True, metavar="~DIR_SPLITS",
@@ -337,7 +378,7 @@ def main() -> int:
         return verificar(api, repo_id)
 
     print(f"subiendo manifiestos a {repo_id} (git-remote privado)...")
-    result = upload(api, repo_id, args.splits_dir, args.tesis_dir)
+    result = upload(api, repo_id, args.splits_dir, args.tesis_dir)   # dict del commit; se enriquece con recibo (segundos, fecha, archivos esperados) para el upload-log.json
     result["segundos"] = round(time.time() - t0, 2)
     result["generado_utc"] = datetime.now(timezone.utc).isoformat()
     result["archivos"] = sorted(EXPECTED)

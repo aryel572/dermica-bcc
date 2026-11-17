@@ -21,8 +21,14 @@ Entradas
 
 Salidas
 -------
-`<out-dir>/{train,val}/<BCC|NO_BCC>/<image>.jpg` (fuera del repo) y
-`<out-dir>/../resize-summary.json` con el recibo de la corrida.
+`<out-dir>/{train,val}/<BCC|NO_BCC>/<image>.jpg` (fuera del repo),
+`<out-dir>/../resize-summary.json` con el recibo de la corrida y —
+con `--verificar` — un chequeo de conteos sin escritura.
+
+Quién consume sus salidas: el entrenamiento de la fase S3 (la copia
+preparada es la entrada de la DataPipeline de Keras/ImageNet) y, al cierre,
+la tesis registra el recibo en `resize-summary.json`; nadie más escribe ni
+lee el árbol 224 px.
 
 Uso:
     uv run python resize_224.py --data-dir ~DIR --splits-dir ~DIR_CSV --out-dir ~DIR_OUT
@@ -79,6 +85,10 @@ def load_splits(splits_dir: Path) -> pd.DataFrame:
     Efectos colaterales
     -------------------
     Ninguno (solo lectura).
+
+    Globales
+    --------
+    Ninguna (usa `leer_csv_csv_splits` importada de dermica_core.io).
     """
     dfs = []
     for name in ("train", "val"):
@@ -104,6 +114,10 @@ def main() -> int:
     Escribe <out-dir>/{train,val}/<BCC|NO_BCC>/<image>.jpg y
     resize-summary.json en el directorio padre de <out-dir>; con --verificar
     audita conteos y tamaño sin escribir.
+
+    Globales
+    --------
+    `TRAIN_ZIP`, `ZIP_PREFIX`, `IMG_SIZE`, `JPEG_Q` (constantes del módulo).
     """
     ap = ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data-dir", type=Path, required=True, metavar="~DIR",
@@ -186,6 +200,10 @@ def verificar(out_dir: Path, splits_dir: Path) -> int:
 
     Por qué comparar contra los CSV particionados: garantiza 1:1 zip↔GT tras el
     filtrado (la auditoría previa lo hizo; se re-chequea aquí).
+
+    Globales
+    --------
+    `IMG_SIZE` (constante del módulo; tamaño esperado 224×224).
     """
     df = load_splits(splits_dir)
     problems = []

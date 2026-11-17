@@ -31,12 +31,21 @@ Efectos colaterales
 Ninguno (solo lectura). pandas se importa de forma perezosa dentro de la
 función: el core sigue siendo instalable con cero dependencias externas (los
 productos que llaman a esta función ya declaran pandas).
+
+Qué produce: DataFrames validadas que consumen la preparación S3/S4 de pares
+224 px y cualquier lectura futura de los CSV de partición. Fase del pipeline:
+S2 (los CSV los escribe write_outputs en make_splits.py); el contrato existe
+para que de S2 en adelante nadie lea un split sin validar.
 """
 
 from pathlib import Path
 
 # Encabezados exactos del contrato de splits (ver docstring del módulo).
 # Conjunto, no lista: el orden no forma parte del contrato perceptible.
+# Los consume leer_csv_csv_splits(); ninguna otra constante deriva de ellos.
+# Recuerde: columnas = image (id ISIC), split (train/val/test), label_full
+# (clase ISIC completa vía idxmax), label_bcc (1/0), lesion_id (id de lesión
+# para agrupar; solo training lo porta de forma completa).
 ENCABEZADOS_SPLITS = frozenset({"image", "split", "label_full", "label_bcc", "lesion_id"})
 
 
@@ -64,6 +73,11 @@ def leer_csv_csv_splits(path):
     Efectos colaterales
     -------------------
     Ninguno (solo lectura).
+
+    Globales
+    --------
+    `ENCABEZADOS_SPLITS` (constante del módulo; única fuente del contrato de
+    columnas). pandas se importa dentro de la función (import perezoso).
     """
     import pandas as pd  # import perezoso: mantiene el core sin dependencias
 

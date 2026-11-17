@@ -18,6 +18,11 @@ Consumidores (medidos): `pipeline/audit/audit_isic.py`,
 `pipeline/prep/resize_224_multi.py`, `pipeline/prep/resize_224_test.py`,
 `pipeline/splits/make_splits.py`, `pipeline/tesis/export_ground_truth.py`,
 `pipeline/tesis/form_tesis.py`.
+
+Qué recibe y qué produce: no lee archivos ni produce artefactos; provee la
+clase base que cada módulo CLI instancia dentro de su `main()` para parsear sus
+flags `--*`. Fase del pipeline: soporte transversal desde la auditoría S1 hasta
+la exportación S4 (todos los módulos invocables con `--help` de la tesis).
 """
 
 import argparse
@@ -31,6 +36,24 @@ class ParserEspanol(argparse.ArgumentParser):
     español, así que los fallos de invocación se traducen aquí (solo el
     texto mostrado, nunca el comportamiento ni los códigos de salida:
     sigue siendo exit 2 ante argumentos inválidos o faltantes).
+
+    Parámetros
+    ----------
+    Los mismos de argparse.ArgumentParser (prog, description, epilog, ...):
+    no agrega argumentos propios ni cambia ningún default; es un drop-in
+    transparente del parser estándar. Los módulos CLI del pipeline la
+    instancian con `description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter`
+    para que `--help` muestre la docstring del módulo tal cual.
+
+    Errores
+    -------
+    No define una ruta de error propia: argparse invoca `error()` ante
+    cualquier fallo de parseo (flag desconocido, valor inválido, faltante
+    obligatorio), y ese método siempre termina con exit 2.
+
+    Globales
+    --------
+    Tránsito por `sys.stderr` dentro de `error()`; ninguna otra global.
     """
 
     def error(self, message: str) -> None:
@@ -45,6 +68,15 @@ class ParserEspanol(argparse.ArgumentParser):
         Retorno
         -------
         No retorna: termina el proceso con exit 2.
+
+        Errores
+        -------
+        No lanza excepciones controladas: argparse llama a este método ante
+        cualquier invocación inválida y `self.exit(2, ...)` termina el proceso.
+
+        Globales
+        --------
+        `sys` (escribe en sys.stderr y llama a sys.exit vía argparse).
         """
         self.print_usage(sys.stderr)
         if "the following arguments are required" in message:

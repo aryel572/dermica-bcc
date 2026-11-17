@@ -38,8 +38,13 @@ Entradas
 
 Salidas
 -------
-El archivo .tflite indicado en `--out`, un `float16-meta.json` en su misma
-carpeta (tamaño, SHA-256, timestamp) y el dict de metadatos por stdout.
+El archivo .tflite indicado en `--out` (el asset del release), un
+`float16-meta.json` en su misma carpeta (tamaño, SHA-256, timestamp) y el
+dict de metadatos por stdout. Quién consume sus salidas: la app Android
+(empaqueta el .tflite como asset y verifica su SHA-256 en el primer arranque
+— ver ADR-0003 y el valor congelado en dermica_core.params.EXPECTED_SHA256)
+y el test de release de la app; el SHA-256 impreso aquí es el que la tesis
+cita como sello del release 1.0.0.
 El checkpoint y el .tflite se publican en el repo git-remote de modelos por
 otro paso del pipeline; este script no publica nada por sí solo.
 
@@ -101,6 +106,10 @@ def _read_env(env_file: Path) -> dict:
     Efectos colaterales
     -------------------
     Ninguno (solo lectura; jamás imprime valores).
+
+    Globales
+    --------
+    Ninguna (función autocontenida sobre `env_file`).
     """
     env = {}
     if not env_file.exists():
@@ -135,6 +144,10 @@ def _hf_token_owner(env_file: Path) -> tuple[str, str]:
     SystemExit
         Código 1 con mensaje en español si falta cualquiera de las dos
         variables en ambas fuentes.
+
+    Globales
+    --------
+    Ninguna (las credenciales viven en `os.environ` y en `env_file`).
     """
     file_env = _read_env(env_file)
     token = os.environ.get("HF_TOKEN") or file_env.get("HF_TOKEN")
@@ -172,6 +185,11 @@ def download_keras(dest_dir: Path, env_file: Path) -> Path:
     Descarga desde Hugging Face (red) y escribe el archivo dentro de dest_dir.
 
     Por qué token explícito: hf_hub_download sin token falla en repos privados.
+
+    Globales
+    --------
+    `REPO_MODELS`, `MODEL_FILE` (constantes del módulo; identificadores del
+    repo remoto de modelos y del archivo a bajar).
     """
     token, owner = _hf_token_owner(env_file)
     from huggingface_hub import hf_hub_download
@@ -208,13 +226,17 @@ def strip_augment(model):
 
     Por qué: las capas Random* son ruido en inferencia y complican la
     conversión; dropout es identidad en eval.
+
+    Globales
+    --------
+    Ninguna (el modelo entra por parámetro; construye uno nuevo en memoria).
     """
-    base = next((l for l in model.layers if l.name == "MobileNetV3Small"), None)
+    base = next((l for l in model.layers if l.name == "MobileNetV3Small"), None)  # capa troncal ImageNet fine-tuneada (el nombre es el que fija el entrenamiento)
     if base is None:
         raise SystemExit("ERROR: no se encontró la capa MobileNetV3Small en el modelo")
-    new_input = tf.keras.Input(shape=model.input_shape[1:])
+    new_input = tf.keras.Input(shape=model.input_shape[1:])  # Input fresco sin la capa augment (que solo existe en entrenamiento)
     x = base(new_input)
-    idx = model.layers.index(base)
+    idx = model.layers.index(base)  # índice de la base para retomar el subgrafo de Dropout/Dense por delante
     for layer in model.layers[idx + 1:]:
         x = layer(x)
     return tf.keras.Model(new_input, x, name="inference_only")
@@ -233,6 +255,12 @@ def main() -> int:
     Lee el .keras (o lo descarga), escribe el .tflite indicado en --out y
     float16-meta.json en su misma carpeta, e imprime los metadatos por
     stdout. Con --verificar no escribe nada.
+
+    Globales
+    --------
+    `ENV_POR_DEFECTO` (default de --env-file) y, vía `download_keras()`,
+    `REPO_MODELS` y `MODEL_FILE`; el SHA-256 se calcula con
+    `dermica_core.hashing.sha256_file` (chunks de 1 MiB).
     """
     ap = ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--keras", type=Path, default=None, metavar="~KERAS",
@@ -266,8 +294,8 @@ def main() -> int:
 
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
     # float16: Optimize.DEFAULT + float16 = la misma receta medida sobre VAL
-    # (AUPRC 0.7786, 1.95 MB, verificada con val-metrics); el modelo fp16 exacto
-    # del release es este
+    # (AUPRC 0.7786, 1.95 MB, verificada con las métricas de val); el modelo
+    # fp16 exacto del release es este
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
     converter.target_spec.supported_types = [tf.float16]
     tflite_model = converter.convert()
