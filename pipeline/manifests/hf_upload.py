@@ -65,12 +65,12 @@ from pathlib import Path
 from huggingface_hub import CommitOperationAdd, HfApi
 from huggingface_hub.utils import HfHubHTTPError
 
-# Raíz del repo (este archivo vive en BACKEND/data_pipeline/manifests/, tres
+# Raíz del repo (este archivo vive en pipeline/manifests/, dos
 # niveles por debajo de la raíz). Solo se usa para el default repo-relativo de
 # --env-file (el .env del repo, gitignored); nada del repo se modifica.
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 ENV_POR_DEFECTO = REPO_ROOT / ".env"
-# config.json vive junto al código de este pipeline (data_pipeline/) y forma
+# config.json vive junto al código de este pipeline (pipeline/) y forma
 # parte del repo: se resuelve desde __file__ para que el CWD no importe.
 # La consume collect_files().
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"

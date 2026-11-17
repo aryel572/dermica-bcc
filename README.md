@@ -6,14 +6,14 @@ Estado: **release 1.0.0 publicada** (modelo float16 + APK v1.0.0).
 
 ## Qué productos contiene este repositorio
 
-Monorepo con 4 productos. Hoy viven bajo `BACKEND/` y `FRONTEND/`; la Fase 1 los reorganizará en carpetas de producto (`pipeline/`, `model/`, `server/`, `android/`) sin cambiar su lógica ni sus contratos (ver `ARCHITECTURE.md`).
+Monorepo con 4 productos, cada uno en su carpeta de raíz (`pipeline/`, `model/`, `server/`, `android/`), sin cambios de lógica ni de contratos entre sí (ver `ARCHITECTURE.md`).
 
-| Producto | Ubicación actual | Ubicación objetivo (Fase 1) | Qué hace |
-|----------|------------------|-----------------------------|----------|
-| **pipeline** | `BACKEND/data_pipeline/` | `pipeline/` | Auditoría de ISIC 2019, formación de subconjuntos TESIS, splits 70/20/10 agrupados por `lesion_id`, manifiestos para el dataset remoto |
-| **model** | `BACKEND/model/` | `model/` | Fine-tuning de MobileNetV3-Small, evaluación, exportación a TFLite (float16/int8), publicación de métricas |
-| **server** | `BACKEND/server/` | `server/` | FastAPI pública: distribución del modelo (`/healthz`, `/model/version`, `/model/latest`, `/model/download`) |
-| **android** | `FRONTEND/` | `android/` | App Android nativa (Kotlin + Jetpack Compose Material 3, LiteRT) |
+| Producto | Ubicación | Qué hace |
+|----------|-----------|----------|
+| **pipeline** | `pipeline/` | Auditoría de ISIC 2019, formación de subconjuntos TESIS, splits 70/20/10 agrupados por `lesion_id`, manifiestos para el dataset remoto |
+| **model** | `model/` | Fine-tuning de MobileNetV3-Small, evaluación, exportación a TFLite (float16/int8), publicación de métricas |
+| **server** | `server/` | FastAPI pública: distribución del modelo (`/healthz`, `/model/version`, `/model/latest`, `/model/download`) |
+| **android** | `android/` | App Android nativa (Kotlin + Jetpack Compose Material 3, LiteRT) |
 
 ## Release 1.0.0 (alcance)
 
@@ -24,25 +24,21 @@ Monorepo con 4 productos. Hoy viven bajo `BACKEND/` y `FRONTEND/`; la Fase 1 los
 
 ## Cómo compilar y probar
 
-**Interfaz objetivo (Fase 1, aún no disponible en `main`)**: `make apk` (build + tests de la app) y `make serve` (servidor local). No existen todavía; se introducirán con la reorganización de carpetas.
-
-**Comandos que funcionan hoy (`main`)**:
-
 ```bash
 # App Android (requiere JDK 21 + Android SDK con android-35 y build-tools 35.0.0)
-cd FRONTEND
+cd android
 ./gradlew :app:assembleDebug          # APK debug
 ./gradlew :app:testDebugUnitTest      # tests JVM (verdes, obligatorio antes de push)
 ./gradlew :app:assembleRelease        # APK release firmado (minify R8)
 
 # Servidor FastAPI (requiere Python; secretos en .env: APP_API_KEY, HF_TOKEN, HF_OWNER)
-cd BACKEND/server
+cd server
 pip install -r requirements.txt
 uvicorn main:app --reload             # escucha en :8000; healthz en /healthz
 
 # Pipeline y modelo (scripts directos; consultá cada script para su CLI)
-uv run python BACKEND/data_pipeline/splits/make_splits.py --help
-uv run python BACKEND/model/evaluate.py --help
+uv run python pipeline/splits/make_splits.py --help
+uv run python model/evaluate.py --help
 ```
 
 Notas:
@@ -54,11 +50,10 @@ Notas:
 
 ```
 dermica-bcc/
-├── BACKEND/                      # hoy: pipeline + model + server
-│   ├── data_pipeline/            # audit/ · prep/ · splits/ · TESIS · manifests/ · config.json
-│   ├── model/                    # train_bcn.py · evaluate.py · metrics.py · push_hf.py · …
-│   └── server/                   # main.py · render.yaml · requirements.txt
-├── FRONTEND/                     # hoy: app Android (app/ · gradle wrapper · local.properties.example)
+├── pipeline/                     # audit/ · prep/ · splits/ · tesis/ · manifests/ · ground-truth/ · config.json
+├── model/                        # train_bcn.py · evaluate.py · metrics.py · push_hf.py · …
+├── server/                       # main.py · render.yaml · requirements.txt
+├── android/                      # app Android (app/ · gradle wrapper · local.properties.example)
 ├── README.md                     # este archivo
 ├── ARCHITECTURE.md               # flujo, contratos de artefactos y reglas de dependencia
 ├── CHANGELOG.md                  # cronología S0 → S5 y release 1.0.0
@@ -69,8 +64,6 @@ dermica-bcc/
 ├── doc-adr/                      # decisiones de arquitectura (ADR 0001–0005)
 └── .github/                      # plantillas de PR e issues
 ```
-
-Layout objetivo (Fase 1): `pipeline/`, `model/`, `server/`, `android/` en la raíz, con los mismos contenidos movidos y sin cambios de lógica.
 
 ## Convenciones rápidas
 
@@ -86,4 +79,4 @@ Layout objetivo (Fase 1): `pipeline/`, `model/`, `server/`, `android/` en la ra�
 ## Atribución y licencia
 
 - Código bajo **MIT** (ver `LICENSE`).
-- Dataset ISIC 2019 bajo **CC BY-NC 4.0** (uso no comercial con citación de ISIC/HAM10000/BCN20000/MSK). Las imágenes no se redistribuyen en este repo; los manifiestos derivados llevan atribución en `BACKEND/data_pipeline/manifests/DATASET_CARD.md`.
+- Dataset ISIC 2019 bajo **CC BY-NC 4.0** (uso no comercial con citación de ISIC/HAM10000/BCN20000/MSK). Las imágenes no se redistribuyen en este repo; los manifiestos derivados llevan atribución en `pipeline/manifests/DATASET_CARD.md`.

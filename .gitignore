@@ -16,6 +16,19 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
+# Android / Gradle (consolidado en la raíz; rutas android/)
+*.iml
+.gradle/
+/android/.gradle/
+build/
+/android/app/build/
+app/build/
+/captures
+.externalNativeBuild/
+.cxx/
+*.jks
+*.keystore
+
 # SO / editores
 .DS_Store
 .idea/

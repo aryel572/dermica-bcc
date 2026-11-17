@@ -10,7 +10,7 @@
 
 | Secreto | Ubicación | Acceso / alcance | Rotación |
 |---------|-----------|------------------|----------|
-| `APP_API_KEY` | `local.properties` (gitignored) → expuesta a la app vía `BuildConfig`; copia servidor en variables de entorno del servicio en Render | Bearer sobre `/model/latest` y `/model/download` únicamente (el resto de la API es público o no usa clave) | Generar clave nueva en el backend, actualizar el servicio en Render y `local.properties`, recompilar/redistribuir la app, verificar, revocar la anterior |
+| `APP_API_KEY` | `local.properties` (gitignored) → expuesta a la app vía `BuildConfig`; copia servidor en variables de entorno del servicio en Render | Bearer sobre `/model/latest` y `/model/download` únicamente (el resto de la API es público o no usa clave) | Generar clave nueva en el backend, actualizar el servicio en Render y `local.properties`, recompilar/redistribuir la app, verificar, revocar la previa |
 | `RELEASE_STORE_PASSWORD` / `RELEASE_KEY_PASSWORD` | `local.properties` (gitignored) | Firma del APK de release | Cambiar junto con el keystore si se compromete (ver abajo) |
 | Keystore de release (`dermica-release.jks`) | `~/.android/dermica-release.jks` — **fuera del control de versiones** | Firma del APK release | **Crítico**: perder el keystore hace imposible volver a firmar actualizaciones de esta app. Mantener una copia de respaldo cifrada fuera del repo; nunca en el repo ni en disco compartido |
 | `HF_TOKEN` | `.env` (gitignored) + variable de entorno en Render | Lectura (read-only) de los repos remotos de modelos y métricas | Crear token nuevo con el mismo scope mínimo, actualizar `.env` y Render, verificar, revocar el viejo |

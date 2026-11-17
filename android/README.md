@@ -1,4 +1,4 @@
-# FRONTEND — APP_DERMICA (BCC)
+# ANDROID — APP_DERMICA (BCC)
 
 Aplicación Android nativa (Kotlin + Jetpack Compose) para **apoyo al tamizaje del carcinoma basocelular (BCC)** en imágenes dermatoscópicas, con **inferencia on-device** mediante el modelo release 1.0.0 (MobileNetV3-Small, `model-float16.tflite`, LiteRT).
 
@@ -14,7 +14,7 @@ Aplicación Android nativa (Kotlin + Jetpack Compose) para **apoyo al tamizaje d
 ## Build y tests
 
 ```bash
-cd FRONTEND
+cd android
 ./gradlew :app:assembleDebug        # APK debug
 ./gradlew :app:testDebugUnitTest    # tests JVM (59/59)
 ./gradlew :app:assembleRelease      # APK release firmado (minify R8); credenciales en local.properties
@@ -31,7 +31,7 @@ Requiere Android SDK con `android-35` + `build-tools 35.0.0` (o ajusta `buildToo
 
 ## Configuración
 
-Copia `local.properties.example` o crea `FRONTEND/local.properties` (gitignored):
+Copia `local.properties.example` o crea `android/local.properties` (gitignored):
 
 ```properties
 APP_API_KEY=tu_clave_aquí

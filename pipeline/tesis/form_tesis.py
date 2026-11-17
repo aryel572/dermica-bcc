@@ -95,7 +95,7 @@ from pathlib import Path
 
 import pandas as pd
 
-# config.json vive junto al código de este pipeline (data_pipeline/) y forma
+# config.json vive junto al código de este pipeline (pipeline/) y forma
 # parte del repo: es la única fuente de verdad para la semilla y la forma de
 # TESIS; no incrustes estos valores — la tesis cita config.json como contrato
 # congelado. La resuelven form() y verificar().

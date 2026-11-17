@@ -116,7 +116,7 @@ fun SettingsScreen(
             if (!isApiKeyConfigured) {
                 // Honesto y sin exponer nada: falta la clave en local.properties (gitignored).
                 Text(
-                    text = "Configura APP_API_KEY en FRONTEND/local.properties para descargar.",
+                    text = "Configura APP_API_KEY en android/local.properties para descargar.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                 )
