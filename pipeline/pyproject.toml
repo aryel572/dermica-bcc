@@ -1,0 +1,16 @@
+# dermica-pipeline — miembro VIRTUAL del workspace (sin [build-system]):
+# scripts ejecutados con `uv run`, no un paquete importable.
+# Dependencias consolidadas de los antiguos pipeline/*/requirements.txt.
+[project]
+name = "dermica-pipeline"
+version = "1.0.0"
+description = "Pipeline de datos ISIC 2019: auditoría, subconjuntos TESIS, splits 70/20/10 y manifiestos HF."
+requires-python = ">=3.12"
+dependencies = [
+    "dermica-core",
+    "pandas==2.3.3",
+    "pillow==13.0.0",
+    "matplotlib==3.11.2",
+    "scikit-learn==1.9.1",
+    "huggingface-hub==2.4.0",
+]

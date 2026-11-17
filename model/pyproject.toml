@@ -1,0 +1,19 @@
+# dermica-model — miembro VIRTUAL del workspace (sin [build-system]).
+# TensorFlow NO entra por defecto: el entrenamiento y la evaluación con TF
+# corren en Google Colab; el entorno local solo necesita métricas y análisis.
+# Para reflejar el entorno de Colab: `uv sync --extra colab` (no recomendado
+# en local: TF pesa cientos de MB).
+[project]
+name = "dermica-model"
+version = "1.0.0"
+description = "Modelo MobileNetV3-Small (fine-tuning, evaluación, exportación TFLite)."
+requires-python = ">=3.12"
+dependencies = [
+    "numpy==2.5.5",
+    "pandas==2.3.3",
+    "scikit-learn==1.9.1",
+    "huggingface-hub==2.4.0",
+]
+
+[project.optional-dependencies]
+colab = ["tensorflow==2.21.0"]

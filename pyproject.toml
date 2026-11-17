@@ -1,0 +1,26 @@
+# APP_DERMICA — monorepo (raíz del workspace uv)
+#
+# Un solo entorno Python para pipeline, model, server y el núcleo compartido
+# (shared/dermica-core). Android (android/) no es Python y queda fuera.
+#
+# Diseño (uv 0.13.x): la raíz es un proyecto VIRTUAL (sin [build-system]):
+# no se construye a sí misma, solo agrupa el workspace y declara la dependencia
+# mínima para que `uv sync` deje importable `dermica_core`. Los miembros son
+# igualmente virtuales salvo `shared`, que es el único paquete real
+# (dermica-core, instalado en editable vía workspace).
+#
+# Versiones fijadas exactas en todos los miembros; transitivas pineadas en
+# uv.lock (commiteado). Nada de rangos abiertos.
+[project]
+name = "dermica-bcc"
+version = "1.0.0"
+description = "Monorepo de APP_DERMICA: pipeline de datos ISIC 2019, modelo MobileNetV3-Small, servidor FastAPI y núcleo compartido."
+requires-python = ">=3.12"
+dependencies = ["dermica-core"]
+
+[tool.uv.workspace]
+members = ["shared", "pipeline", "model", "server"]
+
+# Redirect de dermica-core al miembro shared/ (editable) para todo el workspace.
+[tool.uv.sources]
+dermica-core = { workspace = true }
