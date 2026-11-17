@@ -53,7 +53,9 @@ Cubre el trabajo de la fase S1 — entendimiento de datos (CRISP-DM).
 """
 
 import argparse
-import hashlib
+from dermica_core.labels import ISIC_LABELS  # import único desde dermica_core
+from dermica_core.hashing import sha256_file  # import único desde dermica_core
+from dermica_core.cli import ParserEspanol  # import único desde dermica_core
 import json
 import random
 import subprocess
@@ -91,14 +93,6 @@ META_TEST = "ISIC_2019_Test_Metadata.csv"         # metadata de test (sin lesion
 # asserts duros.
 EXPECTED = {"training": 25331, "test": 8238}
 
-# Orden one-hot exactamente como lo entregan los CSV GroundTruth de ISIC 2019:
-# MEL (melanoma), NV (nevus), BCC (carcinoma basocelular), AK (queratosis
-# actínica), BKL (queratosis benigna similar), DF (dermatofibroma), VASC
-# (lesiones vasculares), SCC (carcinoma espinocelular), UNK (desconocido).
-# Nota: SCC y UNK aparecen en el GT aunque sean raros/ausentes por split; la
-# lista de columnas de clase se interseca con lo que realmente esté presente
-# (ver load_gt). La consumen load_gt() y class_distribution().
-CLASS_COLS = ["MEL", "NV", "BCC", "AK", "BKL", "DF", "VASC", "SCC", "UNK"]
 
 # Semilla de la muestra de dimensiones/modos (~600 imágenes). 42 es la semilla
 # fija de todo el proyecto (el mismo valor que se usa para la formación de
@@ -110,69 +104,8 @@ CLASS_COLS = ["MEL", "NV", "BCC", "AK", "BKL", "DF", "VASC", "SCC", "UNK"]
 SAMPLE_SEED = 42
 
 
-class _ParserEspanol(argparse.ArgumentParser):
-    """ArgumentParser con los mensajes de error en español neutro.
-
-    argparse redacta por defecto en inglés; el pipeline de la tesis es en
-    español, así que los fallos de invocación se traducen aquí (solo el
-    texto mostrado, nunca el comportamiento ni los códigos de salida:
-    sigue siendo exit 2 ante argumentos inválidos o faltantes).
-    """
-
-    def error(self, message: str) -> None:
-        """Imprime el uso y un error en español; sale con código 2.
-
-        Parámetros
-        ----------
-        message : str
-            Detalle redactado por argparse (se conserva el dato útil, p. ej.
-            los nombres de los flags faltantes, pero se enmarca en español).
-
-        Retorno
-        -------
-        No retorna: termina el proceso con exit 2.
-        """
-        self.print_usage(sys.stderr)
-        if "the following arguments are required" in message:
-            faltan = message.split(":", 1)[1].strip()
-            self.exit(2, f"ERROR: faltan los flags obligatorios: {faltan}\n"
-                         f"Consulta --help para la ayuda completa en español.\n")
-        self.exit(2, f"ERROR: {message}\nConsulta --help para la ayuda completa en español.\n")
 
 
-def sha256_file(path: Path) -> str:
-    """Devuelve el digest SHA-256 hexadecimal de un archivo, en chunks de 1 MiB.
-
-    Parámetros
-    ----------
-    path : Path
-        Archivo a hashear. Se lee completo una vez; no se modifica nada.
-
-    Retorno
-    -------
-    str
-        Digest hex en minúsculas (64 chars).
-
-    Errores
-    -------
-    FileNotFoundError
-        Si `path` no existe (p. ej. artefacto borrado entre corridas).
-    OSError
-        Ante fallos de E/S del sistema de archivos durante la lectura.
-
-    Efectos colaterales
-    -------------------
-    Ninguno (solo lectura). La lectura en chunks mantiene la memoria en
-    O(1 MiB) incluso para archivos grandes, lo que importa si alguna vez se
-    ejecuta contra los propios zips.
-    1 << 20 = 1 MiB: lo bastante grande para amortizar llamadas al SO y lo
-    bastante pequeño para seguir en caché.
-    """
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def unzip_test(zip_path: Path) -> tuple[bool, str, float]:
@@ -262,8 +195,8 @@ def load_gt(csv_path: Path) -> tuple[pd.DataFrame, list[str]]:
     Retorno
     -------
     tuple[pd.DataFrame, list[str]]
-        (dataframe GT completo, CLASS_COLS intersecadas con las columnas
-        realmente presentes, preservando el orden de CLASS_COLS). La
+        (dataframe GT completo, ISIC_LABELS intersecadas con las columnas
+        realmente presentes, preservando el orden de ISIC_LABELS). La
         intersección tolera versiones del GT que omiten clases (p. ej. un
         split sin filas SCC puede omitir la columna) sin fallar; el invariante
         que importa — una etiqueta hot por fila — lo hace cumplir
@@ -279,7 +212,7 @@ def load_gt(csv_path: Path) -> tuple[pd.DataFrame, list[str]]:
     Ninguno (parseo del CSV en solo lectura).
     """
     gt = pd.read_csv(csv_path)
-    class_cols = [c for c in CLASS_COLS if c in gt.columns]
+    class_cols = [c for c in ISIC_LABELS if c in gt.columns]
     return gt, class_cols
 
 
@@ -531,7 +464,7 @@ def main() -> int:
     figuras/*.png y README-corrida.md; imprime el progreso por stdout.
     Nunca escribe en --data-dir.
     """
-    ap = _ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data-dir", type=Path, required=True, metavar="~DIR",
                     help="directorio con los archivos crudos de ISIC 2019 (zips y CSV; solo lectura)")
     ap.add_argument("--out-dir", type=Path, required=True, metavar="~DIR_OUT",

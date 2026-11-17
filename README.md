@@ -31,19 +31,32 @@ cd android
 ./gradlew :app:testDebugUnitTest      # tests JVM (verdes, obligatorio antes de push)
 ./gradlew :app:assembleRelease        # APK release firmado (minify R8)
 
-# Servidor FastAPI (requiere Python; secretos en .env: APP_API_KEY, HF_TOKEN, HF_OWNER)
-cd server
-pip install -r requirements.txt
-uvicorn main:app --reload             # escucha en :8000; healthz en /healthz
+# Servidor FastAPI (desde la raíz; secretos en .env: APP_API_KEY, HF_TOKEN, HF_OWNER)
+uv run uvicorn --app-dir server main:app --reload   # escucha en :8000; healthz en /healthz
 
 # Pipeline y modelo (scripts directos; consultá cada script para su CLI)
 uv run python pipeline/splits/make_splits.py --help
-uv run python model/evaluate.py --help
+uv run python model/push_hf.py --help
 ```
+
+## Entorno Python
+
+Un único entorno para los cuatro productos Python (`pipeline/`, `model/`, `server/`, `shared/`), gestionado con **uv** (probado con uv 0.13.x; `requires-python >= 3.12`, `shared/dermica-core` admite >= 3.10):
+
+```bash
+uv sync --all-packages   # crea/actualiza .venv en la raíz e instala los 4 miembros
+```
+
+- `shared/dermica-core` es el único paquete real (name `dermica-core`, 1.0.0, cero dependencias); los demás miembros son virtuales: scripts con deps pineadas, sin `[build-system]`.
+- Las versiones están fijadas exactas en los `pyproject.toml` de cada miembro y las transitivas en `uv.lock` (commiteado). Nada de rangos abiertos.
+- **TensorFlow no entra por defecto** (el entrenamiento y `model/evaluate.py` corren en Colab). Para un entorno con TF: `uv sync --extra colab` o `pip install tensorflow==2.21.0` en Colab.
+- Verificación de la instalación: `uv run python -c "import dermica_core; print(dermica_core.SHORT_CIRCUIT_OK)"` → `True`.
+- `server/requirements.txt` se conserva **solo** para Render (`render.yaml` lo instala); contiene las mismas versiones que `server/pyproject.toml`.
+- Desde un clon limpio: `git clone … && cd dermica-bcc && uv sync --all-packages` — no hace falta crear ningún `.venv` a mano ni `pip install` nada.
 
 Notas:
 - Sin `APP_API_KEY` en `local.properties` la app compila y predice con normalidad; solo los botones de descarga/actualización del modelo quedan deshabilitados (ver `SECURITY.md`).
-- La lógica del pipeline y del modelo se ejecuta desde fuentes Python con `uv`; sus dependencias viven en los `requirements.txt` de cada producto.
+- Las dependencias del pipeline y del modelo viven en el workspace uv raíz (`pyproject.toml` + `uv.lock`), no en `requirements.txt` sueltos.
 - Nada en este repo redistribuye imágenes de ISIC 2019 (ver `LICENSE`).
 
 ## Mapa del repositorio

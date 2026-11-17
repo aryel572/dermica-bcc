@@ -56,6 +56,7 @@ Cubre el trabajo de la fase S4, paso 2a — exportación del modelo a TFLite int
 """
 
 import argparse
+from dermica_core.cli import ParserEspanol  # import único desde dermica_core
 import json
 import os
 import random
@@ -90,34 +91,6 @@ SEED = 42                     # reproducibilidad del muestreo de calibración (l
 LATENCY_SAMPLES = 64          # imágenes val para medir latencia media (lo consume report_latency())
 
 
-class _ParserEspanol(argparse.ArgumentParser):
-    """ArgumentParser con los mensajes de error en español neutro.
-
-    argparse redacta por defecto en inglés; el pipeline de la tesis es en
-    español, así que los fallos de invocación se traducen aquí (solo el
-    texto mostrado, nunca el comportamiento ni los códigos de salida:
-    sigue siendo exit 2 ante argumentos inválidos o faltantes).
-    """
-
-    def error(self, message: str) -> None:
-        """Imprime el uso y un error en español; sale con código 2.
-
-        Parámetros
-        ----------
-        message : str
-            Detalle redactado por argparse (se conserva el dato útil, p. ej.
-            los nombres de los flags faltantes, pero se enmarca en español).
-
-        Retorno
-        -------
-        No retorna: termina el proceso con exit 2.
-        """
-        self.print_usage(sys.stderr)
-        if "the following arguments are required" in message:
-            faltan = message.split(":", 1)[1].strip()
-            self.exit(2, f"ERROR: faltan los flags obligatorios: {faltan}\n"
-                         f"Consulta --help para la ayuda completa en español.\n")
-        self.exit(2, f"ERROR: {message}\nConsulta --help para la ayuda completa en español.\n")
 
 
 def _read_env(env_file: Path) -> dict:
@@ -370,7 +343,7 @@ def main() -> int:
     Lee el .keras (o lo descarga), escribe el .tflite indicado en --out e
     imprime un dict de metadatos por stdout. Con --verificar no escribe nada.
     """
-    ap = _ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data", type=Path, required=True, metavar="~DIR_TRAIN",
                     help="carpeta raíz BCC/NO_BCC del TRAIN preparado de 224 px (origen de la calibración)")
     ap.add_argument("--val-dir", type=Path, default=None, metavar="~DIR_VAL",
