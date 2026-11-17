@@ -1,0 +1,16 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Anillo de dermatoscopio + punto de lesión (monocromo, área segura central) -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FDFCF8"
+        android:strokeWidth="9"
+        android:strokeLineCap="round"
+        android:pathData="M54,30 a24,24 0 1,0 0.01,0" />
+    <path
+        android:fillColor="#FDFCF8"
+        android:pathData="M54,44 a13,13 0 1,0 0.01,0 Z" />
+</vector>
