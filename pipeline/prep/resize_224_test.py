@@ -35,6 +35,8 @@ evaluación final (CRISP-DM).
 """
 
 import argparse
+from dermica_core.io import leer_csv_csv_splits  # import único desde dermica_core
+from dermica_core.cli import ParserEspanol  # import único desde dermica_core
 import json
 import sys
 import time
@@ -57,34 +59,6 @@ IMG_SIZE = 224  # mismo input que el entrenamiento (MobileNetV3-Small); lo consu
 JPEG_Q = 85     # q85, mismo JPEG que el train/val preparado en la fase de entrenamiento; lo consume main()
 
 
-class _ParserEspanol(argparse.ArgumentParser):
-    """ArgumentParser con los mensajes de error en español neutro.
-
-    argparse redacta por defecto en inglés; el pipeline de la tesis es en
-    español, así que los fallos de invocación se traducen aquí (solo el
-    texto mostrado, nunca el comportamiento ni los códigos de salida:
-    sigue siendo exit 2 ante argumentos inválidos o faltantes).
-    """
-
-    def error(self, message: str) -> None:
-        """Imprime el uso y un error en español; sale con código 2.
-
-        Parámetros
-        ----------
-        message : str
-            Detalle redactado por argparse (se conserva el dato útil, p. ej.
-            los nombres de los flags faltantes, pero se enmarca en español).
-
-        Retorno
-        -------
-        No retorna: termina el proceso con exit 2.
-        """
-        self.print_usage(sys.stderr)
-        if "the following arguments are required" in message:
-            faltan = message.split(":", 1)[1].strip()
-            self.exit(2, f"ERROR: faltan los flags obligatorios: {faltan}\n"
-                         f"Consulta --help para la ayuda completa en español.\n")
-        self.exit(2, f"ERROR: {message}\nConsulta --help para la ayuda completa en español.\n")
 
 
 def load_test(split_csv: Path) -> pd.DataFrame:
@@ -104,7 +78,7 @@ def load_test(split_csv: Path) -> pd.DataFrame:
 
     Errores
     -------
-    FileNotFoundError / pd.errors.ParserError
+    FileNotFoundError / pd.errors.ParserError / ValueError
         Si el CSV no existe o no es parseable.
     AssertionError
         Si alguna fila no pertenece al split test (CSV equivocado o editado).
@@ -117,7 +91,7 @@ def load_test(split_csv: Path) -> pd.DataFrame:
     splits y es fija; leer el GT original de ISIC arriesgaría re-barajar;
     nunca se lee el dataset crudo más allá del zip fuente.
     """
-    df = pd.read_csv(split_csv)
+    df = leer_csv_csv_splits(split_csv)
     assert set(df["split"].unique()) == {"test"}, "el CSV debe ser únicamente del split test"
     return df
 
@@ -142,7 +116,7 @@ def main() -> int:
     directorio padre de <out-dir>; con --verificar audita conteos y tamaño
     sin escribir.
     """
-    ap = _ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data-dir", type=Path, required=True, metavar="~DIR",
                     help="directorio con los archivos crudos de ISIC 2019 (zip de training; solo lectura)")
     ap.add_argument("--split-csv", type=Path, required=True, metavar="~CSV",

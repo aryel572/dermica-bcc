@@ -33,6 +33,8 @@ multi-clase (MOBILE-D / CRISP-DM).
 """
 
 import argparse
+from dermica_core.io import leer_csv_csv_splits  # import único desde dermica_core
+from dermica_core.cli import ParserEspanol  # import único desde dermica_core
 import sys
 import time
 import zipfile
@@ -52,34 +54,6 @@ IMG_SIZE = 224   # input MobileNetV3-Small (checkpoint imagenet); lo consume mai
 JPEG_Q = 85      # q85: suficiente para 224 px, ~35-50 KB por imagen; lo consume main()
 
 
-class _ParserEspanol(argparse.ArgumentParser):
-    """ArgumentParser con los mensajes de error en español neutro.
-
-    argparse redacta por defecto en inglés; el pipeline de la tesis es en
-    español, así que los fallos de invocación se traducen aquí (solo el
-    texto mostrado, nunca el comportamiento ni los códigos de salida:
-    sigue siendo exit 2 ante argumentos inválidos o faltantes).
-    """
-
-    def error(self, message: str) -> None:
-        """Imprime el uso y un error en español; sale con código 2.
-
-        Parámetros
-        ----------
-        message : str
-            Detalle redactado por argparse (se conserva el dato útil, p. ej.
-            los nombres de los flags faltantes, pero se enmarca en español).
-
-        Retorno
-        -------
-        No retorna: termina el proceso con exit 2.
-        """
-        self.print_usage(sys.stderr)
-        if "the following arguments are required" in message:
-            faltan = message.split(":", 1)[1].strip()
-            self.exit(2, f"ERROR: faltan los flags obligatorios: {faltan}\n"
-                         f"Consulta --help para la ayuda completa en español.\n")
-        self.exit(2, f"ERROR: {message}\nConsulta --help para la ayuda completa en español.\n")
 
 
 def main() -> int:
@@ -102,7 +76,7 @@ def main() -> int:
     Por qué marcar falla 1: un archivo faltante es señal de que el zip/versión cambió;
     no debe pasar desapercibido en la preparación del entrenamiento.
     """
-    ap = _ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data-dir", type=Path, required=True, metavar="~DIR",
                     help="directorio con los archivos crudos de ISIC 2019 (zip de training; solo lectura)")
     ap.add_argument("--splits-dir", type=Path, required=True, metavar="~DIR_CSV",
@@ -114,7 +88,7 @@ def main() -> int:
     t0 = time.time()
     dfs = []
     for name in ("train", "val"):
-        dfs.append(pd.read_csv(args.splits_dir / f"{name}.csv"))
+        dfs.append(leer_csv_csv_splits(args.splits_dir / f"{name}.csv"))
     df = pd.concat(dfs, ignore_index=True)
     print(f"imágenes: {len(df)} (train+val)")
 

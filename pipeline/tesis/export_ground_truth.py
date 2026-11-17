@@ -36,39 +36,12 @@ provee el insumo de evaluación automática de los subconjuntos de demo.
 """
 
 import argparse
+from dermica_core.cli import ParserEspanol  # import único desde dermica_core
 import csv
 import json
 from pathlib import Path
 
 
-class _ParserEspanol(argparse.ArgumentParser):
-    """ArgumentParser con los mensajes de error en español neutro.
-
-    argparse redacta por defecto en inglés; el pipeline de la tesis es en
-    español, así que los fallos de invocación se traducen aquí (solo el
-    texto mostrado, nunca el comportamiento ni los códigos de salida:
-    sigue siendo exit 2 ante argumentos inválidos o faltantes).
-    """
-
-    def error(self, message: str) -> None:
-        """Imprime el uso y un error en español; sale con código 2.
-
-        Parámetros
-        ----------
-        message : str
-            Detalle redactado por argparse (se conserva el dato útil, p. ej.
-            los nombres de los flags faltantes, pero se enmarca en español).
-
-        Retorno
-        -------
-        No retorna: termina el proceso con exit 2.
-        """
-        self.print_usage(sys.stderr)
-        if "the following arguments are required" in message:
-            faltan = message.split(":", 1)[1].strip()
-            self.exit(2, f"ERROR: faltan los flags obligatorios: {faltan}\n"
-                         f"Consulta --help para la ayuda completa en español.\n")
-        self.exit(2, f"ERROR: {message}\nConsulta --help para la ayuda completa en español.\n")
 
 
 def cargar_manifest(ruta_manifest: Path) -> dict[str, dict[str, str]]:
@@ -127,7 +100,7 @@ def main() -> None:
 
     No retorna nada (exit 0 implícito tras escribir los JSON).
     """
-    parser = _ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--manifest', type=Path, required=True, metavar='~CSV',
                         help='ruta al tesis_manifest.csv (fuera del repo, con los picks verificados)')
     parser.add_argument('--out-dir', type=Path, required=True, metavar='~DIR_OUT',

@@ -83,8 +83,10 @@ Cubre el trabajo de la fase S2, paso 1 — preparación de datos (CRISP-DM).
 """
 
 import argparse
+from dermica_core.labels import ISIC_LABELS  # import único desde dermica_core
+from dermica_core.hashing import sha256_file  # import único desde dermica_core
+from dermica_core.cli import ParserEspanol  # import único desde dermica_core
 import csv
-import hashlib
 import json
 import random
 import sys
@@ -103,12 +105,6 @@ CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 TRAIN_ZIP = "ISIC_2019_Training_Input.zip"   # zip de training de ISIC 2019; nunca se extrae masivamente
 GT_TRAIN = "ISIC_2019_Training_GroundTruth.csv"   # etiquetas one-hot de training
 
-# Orden de columnas one-hot exactamente como lo entrega el CSV GroundTruth de
-# ISIC 2019. Se usa para resolver la etiqueta vía idxmax (el GT es
-# mono-etiqueta: exactamente una columna en hot por fila, invariante que
-# garantiza la auditoría S1 antes de llegar aquí). SCC está presente en el
-# formato GT aunque no se usa en el resto del pipeline. La consume load_train_labels().
-CLASS_COLS = ["MEL", "NV", "BCC", "AK", "BKL", "DF", "VASC", "SCC", "UNK"]
 
 # Carpeta de primer nivel DENTRO del zip de training; las entradas se direccionan
 # como f"{ZIP_PREFIX}{image_id}.jpg". El zip nunca se extrae masivamente: cada
@@ -117,69 +113,8 @@ CLASS_COLS = ["MEL", "NV", "BCC", "AK", "BKL", "DF", "VASC", "SCC", "UNK"]
 ZIP_PREFIX = "ISIC_2019_Training_Input/"
 
 
-class _ParserEspanol(argparse.ArgumentParser):
-    """ArgumentParser con los mensajes de error en español neutro.
-
-    argparse redacta por defecto en inglés; el pipeline de la tesis es en
-    español, así que los fallos de invocación se traducen aquí (solo el
-    texto mostrado, nunca el comportamiento ni los códigos de salida:
-    sigue siendo exit 2 ante argumentos inválidos o faltantes).
-    """
-
-    def error(self, message: str) -> None:
-        """Imprime el uso y un error en español; sale con código 2.
-
-        Parámetros
-        ----------
-        message : str
-            Detalle redactado por argparse (se conserva el dato útil, p. ej.
-            los nombres de los flags faltantes, pero se enmarca en español).
-
-        Retorno
-        -------
-        No retorna: termina el proceso con exit 2.
-        """
-        self.print_usage(sys.stderr)
-        if "the following arguments are required" in message:
-            faltan = message.split(":", 1)[1].strip()
-            self.exit(2, f"ERROR: faltan los flags obligatorios: {faltan}\n"
-                         f"Consulta --help para la ayuda completa en español.\n")
-        self.exit(2, f"ERROR: {message}\nConsulta --help para la ayuda completa en español.\n")
 
 
-def sha256_file(path: Path) -> str:
-    """Devuelve el digest SHA-256 hexadecimal de un archivo, en chunks de 1 MiB.
-
-    Parámetros
-    ----------
-    path : Path
-        Archivo a hashear. Se lee completo una vez; no se modifica nada.
-
-    Retorno
-    -------
-    str
-        Digest hex en minúsculas (64 chars).
-
-    Errores
-    -------
-    FileNotFoundError
-        Si `path` no existe (p. ej. copia borrada entre corridas).
-    OSError
-        Ante fallos de E/S durante la lectura.
-
-    Efectos colaterales
-    -------------------
-    Ninguno (solo lectura). La lectura en chunks mantiene la memoria en
-    O(1 MiB); el hash se calcula sobre el archivo COPIADO en disco (no sobre
-    los bytes de la entrada del zip en memoria), así que el manifiesto prueba
-    lo que realmente se escribió en la carpeta de destino, que es lo que
-    --verificar vuelve a comprobar.
-    """
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def load_train_labels(data_dir: Path) -> pd.Series:
@@ -209,7 +144,7 @@ def load_train_labels(data_dir: Path) -> pd.Series:
     Parseo del CSV en solo lectura. NUNCA abre el GT de test de ISIC.
     """
     gt = pd.read_csv(data_dir / GT_TRAIN)
-    labels = gt[CLASS_COLS].idxmax(axis=1)
+    labels = gt[ISIC_LABELS].idxmax(axis=1)
     labels.index = gt["image"]
     return labels
 
@@ -525,7 +460,7 @@ def main() -> int:
     Ver form()/verificar(); aquí no ocurre nada más allá de parsear argumentos
     y delegar.
     """
-    ap = _ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data-dir", type=Path, required=True, metavar="~DIR",
                     help="directorio con los archivos crudos de ISIC 2019 de training (zip + GT)")
     ap.add_argument("--out-dir", type=Path, required=True, metavar="~DIR_OUT",

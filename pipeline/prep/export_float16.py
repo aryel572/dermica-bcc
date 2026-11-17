@@ -53,7 +53,8 @@ float16 para el release (CRISP-DM / MOBILE-D).
 """
 
 import argparse
-import hashlib
+from dermica_core.hashing import sha256_file  # import único desde dermica_core
+from dermica_core.cli import ParserEspanol  # import único desde dermica_core
 import json
 import os
 import sys
@@ -80,34 +81,6 @@ REPO_MODELS = "dermica-models"
 MODEL_FILE = "1.0.0.keras"   # float release publicado en la fase de entrenamiento (lo consume download_keras())
 
 
-class _ParserEspanol(argparse.ArgumentParser):
-    """ArgumentParser con los mensajes de error en español neutro.
-
-    argparse redacta por defecto en inglés; el pipeline de la tesis es en
-    español, así que los fallos de invocación se traducen aquí (solo el
-    texto mostrado, nunca el comportamiento ni los códigos de salida:
-    sigue siendo exit 2 ante argumentos inválidos o faltantes).
-    """
-
-    def error(self, message: str) -> None:
-        """Imprime el uso y un error en español; sale con código 2.
-
-        Parámetros
-        ----------
-        message : str
-            Detalle redactado por argparse (se conserva el dato útil, p. ej.
-            los nombres de los flags faltantes, pero se enmarca en español).
-
-        Retorno
-        -------
-        No retorna: termina el proceso con exit 2.
-        """
-        self.print_usage(sys.stderr)
-        if "the following arguments are required" in message:
-            faltan = message.split(":", 1)[1].strip()
-            self.exit(2, f"ERROR: faltan los flags obligatorios: {faltan}\n"
-                         f"Consulta --help para la ayuda completa en español.\n")
-        self.exit(2, f"ERROR: {message}\nConsulta --help para la ayuda completa en español.\n")
 
 
 def _read_env(env_file: Path) -> dict:
@@ -261,7 +234,7 @@ def main() -> int:
     float16-meta.json en su misma carpeta, e imprime los metadatos por
     stdout. Con --verificar no escribe nada.
     """
-    ap = _ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--keras", type=Path, default=None, metavar="~KERAS",
                     help=".keras local; si se omite o no existe, se descarga del git-remote dermica-models")
     ap.add_argument("--out", type=Path, required=True, metavar="~TFLITE",
@@ -303,16 +276,14 @@ def main() -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(tflite_model)
     size_bytes = out.stat().st_size
-    sha = hashlib.sha256()
-    with open(out, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            sha.update(chunk)
+    # sha256 del .tflite vía dermica_core (mismo patrón de chunks de 1 MiB)
+    sha256_hex = sha256_file(out)
     meta = {
         "_generado_utc": datetime.now(timezone.utc).isoformat(),
         "tflite": str(out),
         "float16_size_bytes": size_bytes,
         "float16_size_mb": round(size_bytes / 1024 / 1024, 2),
-        "float16_sha256": sha.hexdigest(),
+        "float16_sha256": sha256_hex,
         "quantization": "float16",
     }
     (out.parent / "float16-meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False))
