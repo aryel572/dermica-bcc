@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- HTTPS obligatorio para todo el tráfico de red (S10): ninguna petición puede ir
+     en texto claro. No hay cleartext ni dominios HTTP en esta app.
+     Sin certificate pinning por ahora: mejora futura (T5+). El endpoint
+     dermica-api.onrender.com lo sirve Render con certificado de CA pública. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>
