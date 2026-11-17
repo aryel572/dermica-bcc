@@ -1,0 +1,52 @@
+# Dependabot semanal — actualizaciones minor agrupadas en un solo PR por ecosistema;
+# majors llegan sueltas para revisión manual.
+version: 2
+updates:
+  - package-ecosystem: "gradle"
+    directory: "/android"
+    schedule:
+      interval: "weekly"
+    groups:
+      grouped-minor:
+        update-types: ["minor"]
+
+  # pip por cada pyproject.toml del workspace uv (raíz virtual + miembros virtuales)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      grouped-minor:
+        update-types: ["minor"]
+
+  - package-ecosystem: "pip"
+    directory: "/shared"
+    schedule:
+      interval: "weekly"
+    groups:
+      grouped-minor:
+        update-types: ["minor"]
+
+  - package-ecosystem: "pip"
+    directory: "/pipeline"
+    schedule:
+      interval: "weekly"
+    groups:
+      grouped-minor:
+        update-types: ["minor"]
+
+  - package-ecosystem: "pip"
+    directory: "/model"
+    schedule:
+      interval: "weekly"
+    groups:
+      grouped-minor:
+        update-types: ["minor"]
+
+  - package-ecosystem: "pip"
+    directory: "/server"
+    schedule:
+      interval: "weekly"
+    groups:
+      grouped-minor:
+        update-types: ["minor"]
