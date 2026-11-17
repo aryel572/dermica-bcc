@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Info
@@ -32,19 +33,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dermica.bcc.data.model.ModelState
-import java.util.Locale
-
-private const val GROUND_TRUTH_FILE_NAME = "ground_truth.json"
-private val IMAGE_EXTENSIONS = listOf(".jpg", ".jpeg", ".png")
 
 /**
- * Modo subconjunto (S2/S3/S4/S6): selección de carpeta vía SAF
- * (ACTION_OPEN_DOCUMENT_TREE, sin permisos de almacenamiento), lectura de
- * ground_truth.json de la carpeta, procesado con progreso honesto y cancelación,
- * y navegación al resultado. Las fórmulas NO se muestran jamás (S4).
+ * Modo subconjunto (S2/S3/S4/S6 · S5-multi): selección de carpeta vía SAF
+ * (ACTION_OPEN_DOCUMENT_TREE, sin permisos de almacenamiento). Una carpeta por
+ * intent: si el árbol tiene ground_truth.json en la raíz corre el flujo T4;
+ * si es un PADRE, la app enumera las subcarpetas calificadas y las procesa
+ * todas en una corrida (S5-multi); cualquier otra cosa → error honesto.
  *
  * State hoisting: la pantalla recibe [modelState] y callbacks; la corrida vive en
  * [SubsetViewModel] (viewModelScope), que sobrevive a rotaciones de pantalla.
@@ -81,13 +78,20 @@ fun SubsetScreen(
                 onCancel = viewModel::cancel,
             )
 
+            is SubsetRunState.MultiDone -> MultiDoneContent(
+                summary = state.summary,
+                onAnotherFolder = viewModel::reset,
+                onViewHistory = onViewHistory,
+            )
+
             is SubsetRunState.Error -> ErrorContent(
                 message = state.message,
                 onRetry = viewModel::reset,
                 onBack = onBack,
             )
 
-            SubsetRunState.Cancelled -> CancelledContent(
+            is SubsetRunState.Cancelled -> CancelledContent(
+                savedSubsets = state.savedSubsets,
                 onPickAgain = viewModel::reset,
                 onBack = onBack,
             )
@@ -102,59 +106,25 @@ fun SubsetScreen(
 }
 
 /**
- * Resolución de la carpeta elegida: listado de imágenes (orden por nombre),
- * búsqueda de ground_truth.json en la RAÍZ del árbol y lectura a texto.
- * Cualquier fallo → Error state con explicación (nunca crash, S3).
+ * Resolución del árbol elegido (S5-multi): delega en [resolveTree] (adapter Android).
+ * - RAÍZ con ground_truth.json → flujo T4 (una sola carpeta, como hoy).
+ * - PADRE con subcarpetas calificadas → lote multi (todas en una corrida).
+ * - Nada elegible → Error state con botón Reintentar/Volver. Nunca crash (S3).
  */
 private fun prepareAndRun(context: Context, treeUri: Uri, viewModel: SubsetViewModel) {
-    val root = DocumentFile.fromTreeUri(context, treeUri)
-    if (root == null || !root.isDirectory) {
-        viewModel.fail("No se pudo abrir la carpeta elegida.")
-        return
-    }
-    val folderLabel = root.name?.takeIf { it.isNotBlank() } ?: "subconjunto"
-    val children = root.listFiles()
-    val images = children
-        .filter { it.isFile }
-        .mapNotNull { document ->
-            val name = document.name ?: return@mapNotNull null
-            if (IMAGE_EXTENSIONS.any { extension -> name.lowercase(Locale.ROOT).endsWith(extension) }) {
-                SubsetImage(name = name, uri = document.uri)
-            } else {
-                null
-            }
-        }
-        .sortedBy { it.name.lowercase(Locale.ROOT) }
-    if (images.isEmpty()) {
-        viewModel.fail("La carpeta no contiene imágenes .jpg, .jpeg ni .png.")
-        return
-    }
-
-    // ground_truth.json SOLO en la raíz del árbol (S3): la referencia viaja con la carpeta.
-    val groundTruthDocument = children.firstOrNull { it.isFile && it.name == GROUND_TRUTH_FILE_NAME }
-    if (groundTruthDocument == null) {
-        viewModel.fail(
-            "La carpeta no contiene ground_truth.json. La referencia " +
-                "(nombre de imagen → diagnóstico) viaja en ese archivo dentro de la carpeta.",
+    when (val resolution = resolveTree(context, treeUri)) {
+        is TreeResolution.Fail -> viewModel.fail(resolution.message)
+        is TreeResolution.SingleSubset -> viewModel.startRun(
+            folderLabel = resolution.folderLabel,
+            images = resolution.images,
+            groundTruthJson = resolution.groundTruthJson,
+            contentResolver = context.contentResolver,
         )
-        return
+        is TreeResolution.MultiSubset -> viewModel.startMultiRun(
+            folders = resolution.inputs,
+            contentResolver = context.contentResolver,
+        )
     }
-    val jsonText = try {
-        context.contentResolver.openInputStream(groundTruthDocument.uri)
-            ?.use { it.readBytes().toString(Charsets.UTF_8) }
-    } catch (error: Exception) {
-        null
-    }
-    if (jsonText == null) {
-        viewModel.fail("No se pudo leer ground_truth.json desde la carpeta.")
-        return
-    }
-    viewModel.startRun(
-        folderLabel = folderLabel,
-        images = images,
-        groundTruthJson = jsonText,
-        contentResolver = context.contentResolver,
-    )
 }
 
 /** Selector de carpeta (CTA) o estado vacío cuando el modelo no está disponible (patrón T3). */
@@ -181,7 +151,7 @@ private fun IdleContent(
         )
         Text(text = "Subir subconjunto", style = MaterialTheme.typography.headlineSmall)
         Text(
-            text = "Elige la carpeta del subconjunto: debe contener las imágenes dermatoscópicas y un archivo ground_truth.json con la referencia de cada imagen.",
+            text = "Elige la carpeta del subconjunto (imágenes + ground_truth.json), o una carpeta que contenga varios subconjuntos: la app procesará cada subcarpeta con su ground_truth.json.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
@@ -215,12 +185,16 @@ private fun IdleContent(
     }
 }
 
-/** Progreso honesto en curso: qué imagen va, cuánto lleva y Cancelar siempre visible (S2). */
+/**
+ * Progreso honesto en curso (S2): en carpeta única, sólo el avance de la carpeta;
+ * en multi (currentFolder != null), posición en el lote + barra general + barra por imagen.
+ */
 @Composable
 private fun RunningContent(
     state: SubsetRunState.Running,
     onCancel: () -> Unit,
 ) {
+    val isMulti = state.currentFolder != null
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -240,13 +214,42 @@ private fun RunningContent(
                 modifier = Modifier.padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Text(text = "Procesando subconjunto…", style = MaterialTheme.typography.titleMedium)
+                if (isMulti) {
+                    // Encabezado de lote: qué subcarpeta va de cuántas (S5-multi).
+                    Text(
+                        text = "Subconjunto ${state.folderIndex} de ${state.folderCount} — ${state.currentFolder}",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        text = "Progreso del lote",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    LinearProgressIndicator(
+                        progress = { batchProgress(state) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        text = "${state.foldersDone} de ${state.folderCount} subconjuntos procesados",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Text(text = "Procesando subconjunto…", style = MaterialTheme.typography.titleMedium)
+                }
                 Text(
                     text = state.currentName ?: "Preparando…",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                 )
+                if (isMulti) {
+                    Text(
+                        text = "Imágenes del subconjunto actual",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 LinearProgressIndicator(
                     progress = { if (state.total > 0) state.done.toFloat() / state.total else 0f },
                     modifier = Modifier.fillMaxWidth(),
@@ -260,6 +263,83 @@ private fun RunningContent(
         }
         OutlinedButton(onClick = onCancel, modifier = Modifier.fillMaxWidth()) {
             Text(text = "Cancelar")
+        }
+    }
+}
+
+/** Avance general del lote (0..1): subcarpetas cerradas + fracción de la carpeta actual. */
+private fun batchProgress(state: SubsetRunState.Running): Float {
+    if (state.folderCount <= 0) return 0f
+    val perImage = if (state.total > 0) state.done.toFloat() / state.total else 0f
+    return ((state.foldersDone + perImage) / state.folderCount).coerceIn(0f, 1f)
+}
+
+/**
+ * Lote multi terminado (S5-multi): «Listo: procesé N subconjuntos» + lista corta
+ * de fallos. El historial ya tiene una card por subcarpeta; aquí solo el resumen.
+ */
+@Composable
+private fun MultiDoneContent(
+    summary: SubsetBatchSummary,
+    onAnotherFolder: () -> Unit,
+    onViewHistory: () -> Unit,
+) {
+    val headline = if (summary.completed == 0) {
+        "No se procesó ningún subconjunto"
+    } else {
+        val noun = if (summary.completed == 1) "subconjunto" else "subconjuntos"
+        "Listo: procesé ${summary.completed} $noun"
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp)
+            .widthIn(max = 480.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(
+            Icons.Filled.CheckCircle,
+            contentDescription = null,
+            modifier = Modifier.padding(top = 32.dp),
+            tint = MaterialTheme.colorScheme.primary,
+        )
+        Text(text = headline, style = MaterialTheme.typography.titleLarge, textAlign = TextAlign.Center)
+        if (summary.failed.isNotEmpty()) {
+            Text(
+                text = "${summary.failed.size} fallaron:",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+            )
+            // Lista corta: los 3 primeros con motivo; el resto, contados.
+            summary.failed.take(3).forEach { failure ->
+                Text(
+                    text = "• ${failure.folderLabel}: ${failure.reason}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
+            val extra = summary.failed.size - 3
+            if (extra > 0) {
+                Text(
+                    text = "…y $extra más",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Text(
+            text = "Cada subconjunto quedó guardado en el historial con sus métricas.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+        Button(onClick = onViewHistory, modifier = Modifier.fillMaxWidth()) {
+            Text(text = "Ver historial")
+        }
+        OutlinedButton(onClick = onAnotherFolder, modifier = Modifier.fillMaxWidth()) {
+            Text(text = "Otra carpeta")
         }
     }
 }
@@ -301,12 +381,19 @@ private fun ErrorContent(
     }
 }
 
-/** Cancelación pedida por el usuario: estado Final honesto, sin resultados parciales. */
+/** Cancelación pedida por el usuario: estado final honesto. Las subcarpetas ya persistidas se informan. */
 @Composable
 private fun CancelledContent(
+    savedSubsets: Int,
     onPickAgain: () -> Unit,
     onBack: () -> Unit,
 ) {
+    val body = if (savedSubsets > 0) {
+        // Corrida multi: lo ya persistido NO se pierde (S5-multi); la carpeta en curso se descarta.
+        "Cancelaste el procesamiento. Los $savedSubsets subconjuntos ya procesados quedaron guardados en el historial."
+    } else {
+        "No se guardó ningún resultado en el historial."
+    }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -323,7 +410,7 @@ private fun CancelledContent(
         )
         Text(text = "Procesamiento cancelado", style = MaterialTheme.typography.titleLarge)
         Text(
-            text = "No se guardó ningún resultado en el historial.",
+            text = body,
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
