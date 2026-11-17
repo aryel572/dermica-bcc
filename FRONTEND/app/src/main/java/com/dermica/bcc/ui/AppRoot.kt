@@ -27,6 +27,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import android.util.Log
 import com.dermica.bcc.data.history.HistoryDatabase
 import com.dermica.bcc.data.history.HistoryRepository
 import com.dermica.bcc.data.model.ModelManager
@@ -76,6 +77,11 @@ fun AppRoot() {
     var predicting by remember { mutableStateOf(false) }
     var predictionError by remember { mutableStateOf<String?>(null) }
     var result by remember { mutableStateOf<PredictionUi?>(null) }
+    // Fix review-corroborated R3-001: si LiteRT no puede inicializar, modelState
+    // queda en READY con predictor null; sin esto cada tap en «Imagen única» mostraba
+    // «El modelo todavía no está listo» (mensaje engañoso) sin log ni salida.
+    // Ahora se loguea el fallo y se deshabilita la CTA con un mensaje claro.
+    var modelError by remember { mutableStateOf<String?>(null) }
     val predictorBox = remember { mutableStateOf<BccPredictor?>(null) }
 
     // Libera el Interpreter cuando el owner (actividad) sale de composición.
@@ -86,16 +92,27 @@ fun AppRoot() {
     LaunchedEffect(Unit) { modelManager.ensureModel() }
 
     // Predictor se crea perezosamente cuando el modelo está listo y se invalida
-    // si el modelo deja de estarlo (borrado/fallo).
+    // si el modelo deja de estarlo (borrado/fallo). Fix review-corroborated R3-001:
+    // el fallo de construcción se loguea y publica modelError (CTA deshabilitada);
+    // nunca se queda un estado READY engañoso sin salida visible.
     LaunchedEffect(modelState) {
         if (modelState == ModelState.READY && predictorBox.value == null) {
             val file = modelManager.modelFile()
-            predictorBox.value = file?.let { modelFile ->
-                runCatching { BccPredictor(modelFile) }.getOrNull()
+            val built = file?.let { modelFile ->
+                runCatching { BccPredictor(modelFile) }
+                    .onFailure { error -> Log.e(TAG, "BccPredictor no pudo inicializar: ${error.message}", error) }
+                    .getOrNull()
+            }
+            predictorBox.value = built
+            modelError = if (built == null) {
+                "No se pudo cargar el modelo; reinicia la aplicación."
+            } else {
+                null
             }
         } else if (modelState != ModelState.READY && predictorBox.value != null) {
             predictorBox.value?.close()
             predictorBox.value = null
+            modelError = null
         }
     }
 
@@ -168,6 +185,7 @@ fun AppRoot() {
                     modelState = modelState,
                     predicting = predicting,
                     predictionError = predictionError,
+                    modelLoadError = modelError,
                     onImageBytesChosen = ::onImageChosen,
                     onOpenSubset = { route = AppRoute.SUBSET },
                 )
@@ -188,6 +206,7 @@ fun AppRoot() {
                             modelState = modelState,
                             predicting = predicting,
                             predictionError = predictionError,
+                            modelLoadError = modelError,
                             onImageBytesChosen = ::onImageChosen,
                             onOpenSubset = { route = AppRoute.SUBSET },
                         )
@@ -219,3 +238,5 @@ fun AppRoot() {
         }
     }
 }
+
+private const val TAG = "AppRoot"

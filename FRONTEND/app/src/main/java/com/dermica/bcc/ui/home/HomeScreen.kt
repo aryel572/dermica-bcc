@@ -49,6 +49,8 @@ fun HomeScreen(
     modelState: ModelState,
     predicting: Boolean,
     predictionError: String?,
+    /** Fix review-corroborated R3-001: fallo de construcción del motor; deshabilita la CTA. */
+    modelLoadError: String? = null,
     onImageBytesChosen: (ByteArray, String?) -> Unit,
     onOpenSubset: () -> Unit,
     modifier: Modifier = Modifier,
@@ -86,14 +88,16 @@ fun HomeScreen(
             ModelStatusRow(modelState)
 
             // Acción principal 1: imagen única → resultado.
+            // Fix review-corroborated R3-001: con modelLoadError la CTA queda deshabilitada
+            // y muestra el motivo real (nunca el engañoso «todavía no está listo»).
             ActionCard(
                 title = "Imagen única",
                 description = "Elige una imagen dermatoscópica y obtén el resultado del tamizaje.",
                 buttonText = if (predicting) "Procesando…" else "Elegir imagen",
-                buttonEnabled = modelReady && !predicting,
+                buttonEnabled = modelReady && !predicting && modelLoadError == null,
                 onAction = { picker.launch(arrayOf("image/*")) },
                 leading = { Icon(Icons.Filled.Image, contentDescription = null) },
-                supportingText = if (modelReady) null else modeloNoDisponibleTexto(modelState),
+                supportingText = modelLoadError ?: (if (modelReady) null else modeloNoDisponibleTexto(modelState)),
             )
 
             // Acción principal 2: subconjunto → placeholder (T4 lo reemplaza entero).
