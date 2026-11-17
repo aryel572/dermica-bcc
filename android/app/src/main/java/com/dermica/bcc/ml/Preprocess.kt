@@ -6,6 +6,11 @@ import android.graphics.BitmapFactory
 /**
  * Decode y redimensionado de imágenes al contrato del modelo.
  *
+ * Lugar en el flujo: motor ML (ml), capa Android (Bitmap/BitmapFactory). Lo
+ * consume BccPredictor (única llamada en predictBlocking); la parte testeable
+ * en JVM vive en TensorBuffer. Salida visible: un Bitmap 224×224 ARGB_8888
+ * listo para TensorBuffer.fromArgb.
+ *
  * Fidelidad con el entrenamiento (S3): resize_224.py preparó las imágenes con
  * PIL Image.resize((224,224), Image.BILINEAR) sobre el original (squash, sin
  * recorte ni preservación de aspecto). Aquí se replica la misma geometría con
@@ -20,11 +25,17 @@ object Preprocess {
     // Fix R4-009: umbral de memoria en el lado mayor. Las dermatocopias grandes se
     // submuestrean (inSampleSize, potencia de 2) antes del squash final a 224 px;
     // por debajo el decode es idéntico al original píxel a píxel (fidelidad S3 intacta).
+    // Consumidor: decodeTo224 (inSampleSizeFor lo aplica).
     private const val MEMORY_LIMIT_SIDE_PX = 2048
 
     /**
      * bytes JPEG/PNG → Bitmap 224×224 ARGB_8888.
-     * Lanza IllegalArgumentException si los bytes no decodifican como imagen.
+     *
+     * @param imageBytes — ByteArray: contenido íntegro de la imagen (JPEG o PNG).
+     * @return Bitmap 224×224 ARGB_8888, listo para [toArgbPixels]; el caller debe
+     *         reciclarlo tras usarlo (BccPredictor lo hace en finally).
+     * @throws IllegalArgumentException si los bytes no decodifican como imagen
+     *         (falla temprano, antes de reservar memoria para el bitmap).
      *
      * Memoria (fix R4-009): si el lado mayor de la imagen supera [MEMORY_LIMIT_SIDE_PX],
      * se acota primero con inJustDecodeBounds + inSampleSize (potencia de 2) a ≤2048 px
@@ -61,8 +72,10 @@ object Preprocess {
 
     /**
      * Mayor potencia de 2 por la que submuestrear para dejar el lado mayor ≤ umbral.
-     * Busca la primera potencia de 2 que satisface el límite; nunca devuelve 1 para
-     * imágenes sobre el umbral.
+     *
+     * @param maxSide — Int: lado mayor de la imagen decodificada en bounding pass.
+     * @return Int: potencia de 2 ≥ 2 que garantiza maxSide/sample ≤ MEMORY_LIMIT_SIDE_PX;
+     *         nunca devuelve 1 para imágenes sobre el umbral.
      */
     private fun inSampleSizeFor(maxSide: Int): Int {
         var sample = 1
@@ -70,7 +83,15 @@ object Preprocess {
         return sample
     }
 
-    /** Bitmap → píxeles ARGB (0xAARRGGBB) en orden de fila, listos para TensorBuffer.fromArgb. */
+    /**
+     * Bitmap → píxeles ARGB (0xAARRGGBB) en orden de fila, listos para TensorBuffer.fromArgb.
+     *
+     * @param bitmap — Bitmap de exactamente 224×224 (lo garantiza [decodeTo224]).
+     * @return IntArray de 50176 píxeles (224×224) en orden de fila.
+     * @throws IllegalArgumentException si el bitmap mide menos de 224×224
+     *         (getPixels lo rechaza); si mide más, copia la región 224×224 superior
+     *         izquierda sin error.
+     */
     fun toArgbPixels(bitmap: Bitmap): IntArray {
         val pixels = IntArray(TensorBuffer.PIXEL_COUNT)
         bitmap.getPixels(

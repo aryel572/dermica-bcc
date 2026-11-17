@@ -1,17 +1,34 @@
 package com.dermica.bcc.data.history
 
-/** Valores crudos de verdict persistidos en `history_events.verdict`. */
+/**
+ * Valores crudos de verdict persistidos en `history_events.verdict`.
+ *
+ * Origen: contrato de la tabla (S6) — verdict se guarda como texto legible por SQL,
+ * no como enum serializado; HistoryEvent los escribe en addImagePrediction y el
+ * mapper los devuelve tal cual en HistoryItem.Image.verdict.
+ */
 internal const val VERDICT_BCC = "BCC"
 internal const val VERDICT_NO_BCC = "NO_BCC"
 
 /**
  * Mapea entidad Room → dominio del historial.
  *
+ * Lugar en el flujo: datos (data/history), frontera tabla↔dominio. Lo consume
+ * HistoryRepository (items) vía mapNotNull; la fila inválida queda fuera de la
+ * lista. Cubierto por HistoryMappersTest en JVM.
+ *
  * Devuelve null (y la fila se omite del historial) cuando la fila está
  * incompleta o corrupta: un evento persistido a medias por un crash no debe
  * romper la lista ni inventar datos que no existen (p.ej. un verdict NULL).
  * La política de recuperación (borrar la fila) se deja a una futura migración;
  * en T3 simplemente no se renderiza.
+ *
+ * @receiver HistoryEvent: fila cruda de history_events (Room).
+ * @return HistoryItem?: dominio listo para la UI; null si la fila está
+ *         incompleta/corrupta (IMAGE sin verdict/confidence, SUBSET con campos
+ *         fuera de rango o NULL, o kind desconocido).
+ *
+ * Efectos: ninguno; es un mapeo puro.
  */
 internal fun HistoryEvent.toItemOrNull(): HistoryItem? = when (kind) {
     HistoryKind.IMAGE -> {
