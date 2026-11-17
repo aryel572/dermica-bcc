@@ -23,7 +23,14 @@ Entradas
 
 Salidas
 -------
-`<out-dir>/{train,val}/<CLASE>/<image>.jpg` (fuera del repo).
+`<out-dir>/{train,val}/<CLASE>/<image>.jpg` (fuera del repo). No hay
+`--verificar` ni `resize-summary.json` en esta variante: su salida la consume
+la comparación multi-clase de la fase S3 y nada más, así que la auditoría se
+delega a los conteos que imprime el propio `main()`.
+
+Quién consume sus salidas: el entrenamiento de comparación multi-clase de la
+fase S3 (misma receta de entrenamiento que la instancia binaria); el árbol de
+224 px multi-clase nunca alimenta la app ni el release.
 
 Uso:
     uv run python resize_224_multi.py --data-dir ~DIR --splits-dir ~DIR_CSV --out-dir ~DIR_OUT
@@ -75,6 +82,10 @@ def main() -> int:
 
     Por qué marcar falla 1: un archivo faltante es señal de que el zip/versión cambió;
     no debe pasar desapercibido en la preparación del entrenamiento.
+
+    Globales
+    --------
+    `TRAIN_ZIP`, `ZIP_PREFIX`, `IMG_SIZE`, `JPEG_Q` (constantes del módulo).
     """
     ap = ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data-dir", type=Path, required=True, metavar="~DIR",

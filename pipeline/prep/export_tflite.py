@@ -43,8 +43,12 @@ Salidas
 -------
 El archivo .tflite indicado en `--out`, un dict de metadatos impreso por
 stdout (tamaño, latencia) y — si se indica --val-dir — la latencia int8 sobre val.
-El checkpoint y el .tflite se publican en el repo git-remote de modelos por
-otro paso del pipeline; este script no publica nada por sí solo.
+Quién consume sus salidas: nadie en producción — el int8 se abandonó tras
+medir ΔAUPRC −0.331 en val frente al float (ver export_float16.py, que sí
+publica el release); este script y su .tflite quedan como artefacto de
+comparación de la fase S4. El checkpoint y cualquier .tflite que sí se
+publica van al repo git-remote de modelos por otro paso del pipeline; este
+script no publica nada por sí solo.
 
 Uso:
     uv run python export_tflite.py --data ~DIR_TRAIN --out ~TFLITE
@@ -111,6 +115,10 @@ def _read_env(env_file: Path) -> dict:
     Efectos colaterales
     -------------------
     Ninguno (solo lectura; jamás imprime valores).
+
+    Globales
+    --------
+    Ninguna (función autocontenida sobre `env_file`).
     """
     env = {}
     if not env_file.exists():
@@ -145,6 +153,10 @@ def _hf_token_owner(env_file: Path) -> tuple[str, str]:
     SystemExit
         Código 1 con mensaje en español si falta cualquiera de las dos
         variables en ambas fuentes.
+
+    Globales
+    --------
+    Ninguna (las credenciales viven en `os.environ` y en `env_file`).
     """
     file_env = _read_env(env_file)
     token = os.environ.get("HF_TOKEN") or file_env.get("HF_TOKEN")
@@ -183,6 +195,11 @@ def download_keras(dest_dir: Path, env_file: Path) -> Path:
 
     Por qué token explícito: hf_hub_download sin token pediría anónimamente y fallaría
     en el repo privado.
+
+    Globales
+    --------
+    `REPO_MODELS`, `MODEL_FILE` (constantes del módulo; identificadores del
+    repo remoto de modelos y del archivo a bajar).
     """
     token, owner = _hf_token_owner(env_file)
     from huggingface_hub import hf_hub_download
@@ -210,6 +227,11 @@ def representative_dataset(train_dir: Path):
 
     Por qué [0,255]: el modelo se entrenó sin normalizar; calibrar con otra escala
     produciría int8 insignificantes y degradación de AUPRC evitable.
+
+    Globales
+    --------
+    `SEED`, `REP_SAMPLES`, `IMG_SIZE` (constantes del módulo; semilla del
+    muestreo, tamaño de la calibración e input de 224 px).
     """
     files = sorted(Path(train_dir).rglob("*.jpg"))
     rng = random.Random(SEED)
@@ -249,6 +271,11 @@ def convert_to_tflite(model, train_dir: Path, out_path: Path) -> Path:
 
     Por qué full int8: input/output int8 elimina la necesidad de capas float
     extra en LiteRT y es el formato soportado por LiteRT/Android en gama media.
+
+    Globales
+    --------
+    Ninguna (la conversión se parametriza por argumentos; TFLiteConverter
+    vive en `tf`).
     """
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
@@ -290,6 +317,11 @@ def report_latency(tflite_path: Path, val_dir: Path) -> dict:
 
     Por qué val como proxy (no TRAIN ni TEST): prueba realista sobre datos que
     el modelo no vio durante calibración; NO es la medición final de evaluación.
+
+    Globales
+    --------
+    `SEED`, `LATENCY_SAMPLES`, `IMG_SIZE` (constantes del módulo; semilla,
+    tamaño de muestra e input de 224 px).
     """
     # El delegate XNNPACK falla en este runtime (nodo 117 del grafo int8).
     # Se usa LiteRT (paquete oficial, sin delegados por defecto); si no está
@@ -306,16 +338,16 @@ def report_latency(tflite_path: Path, val_dir: Path) -> dict:
             raise SystemExit("ERROR: no está ai_edge_litert ni TensorFlow en este entorno; falta una de las dos para medir latencia.")
         interpreter = tf.lite.Interpreter(model_path=str(tflite_path))
     interpreter.allocate_tensors()
-    in_det = interpreter.get_input_details()[0]
-    out_det = interpreter.get_output_details()[0]
+    in_det = interpreter.get_input_details()[0]   # descriptor del tensor de entrada: index, dtype, shape, quantization
+    out_det = interpreter.get_output_details()[0]  # descriptor del tensor de salida (probabilidades/logits según el grafo int8)
     files = sorted(Path(val_dir).rglob("*.jpg"))
     rng = random.Random(SEED)
     chosen = rng.sample(files, min(LATENCY_SAMPLES, len(files)))
-    in_scale, in_zp = in_det.get("quantization", (0.0, 0))
+    in_scale, in_zp = in_det.get("quantization", (0.0, 0))  # escala y zero-point del tensor int8 de entrada (para cuantizar la muestra)
     latencies = []
     for p in chosen:
         img = tf.keras.preprocessing.image.load_img(str(p), target_size=(IMG_SIZE, IMG_SIZE))
-        arr = np.asarray(img, dtype=np.float32)[np.newaxis, ...]
+        arr = np.asarray(img, dtype=np.float32)[np.newaxis, ...]  # [1,224,224,3] float32, valores [0,255]
         if in_det["dtype"] == np.int8:
             arr = np.round(arr / in_scale + in_zp).astype(np.int8)
         t0 = time.perf_counter()
@@ -342,6 +374,12 @@ def main() -> int:
     -------------------
     Lee el .keras (o lo descarga), escribe el .tflite indicado en --out e
     imprime un dict de metadatos por stdout. Con --verificar no escribe nada.
+
+    Globales
+    --------
+    `ENV_POR_DEFECTO` (default de --env-file) y, vía `download_keras()`,
+    `REPO_MODELS` y `MODEL_FILE`; `IMG_SIZE`, `SEED`, `REP_SAMPLES` y
+    `LATENCY_SAMPLES` en las rutas de calibración y latencia.
     """
     ap = ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data", type=Path, required=True, metavar="~DIR_TRAIN",

@@ -12,6 +12,11 @@ Consumidores (medidos): `pipeline/audit/audit_isic.py` y
 `pipeline/tesis/form_tesis.py` (tenían su propio `sha256_file` idéntico) y
 `pipeline/prep/export_float16.py` (mismo patrón en línea para el .tflite).
 
+Qué recibe y qué produce: no lee flags ni escribe artefactos; expone dos
+funciones de hashing importadas por los consumidores. Fase del pipeline:
+soporte transversal de la auditoría S1 a la exportación S4 (los manifiestos y
+verificaciones que sella cada fase dependen de digests idénticos byte a byte).
+
 Digest: siempre hexadecimal en minúsculas (64 caracteres).
 """
 
@@ -20,6 +25,8 @@ from pathlib import Path
 
 # Tamaño de chunk de lectura: 1 MiB (1 << 20). No exponer como knob: cada
 # llamada debe comportarse idéntica para que los manifiestos sean comparables.
+# Lo consume sha256_file(); cambiarlo no altera el digest (SHA-256 es inmune al
+# chunking), solo el perfil de memoria/tiempo de la lectura.
 _CHUNK = 1 << 20
 
 
@@ -35,6 +42,14 @@ def sha256_bytes(data: bytes) -> str:
     -------
     str
         Digest hex en minúsculas (64 chars).
+
+    Errores
+    -------
+    Ninguno: `hashlib.sha256` opera sobre bytes ya en memoria.
+
+    Globales
+    --------
+    Ninguna (depende solo del módulo `hashlib`).
     """
     return hashlib.sha256(data).hexdigest()
 
@@ -64,6 +79,10 @@ def sha256_file(path) -> str:
     Ninguno (solo lectura). La lectura en chunks mantiene la memoria en
     O(1 MiB); el hash se calcula sobre el archivo COPIADO en disco, que es lo
     que manifiestos y verificaciones vuelven a comprobar.
+
+    Globales
+    --------
+    `_CHUNK` (constante del módulo, 1 MiB); no toca ninguna otra global.
     """
     h = hashlib.sha256()
     with open(Path(path), "rb") as f:

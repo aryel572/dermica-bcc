@@ -23,8 +23,13 @@ Entradas
 
 Salidas
 -------
-`<out-dir>/{BCC,NO_BCC}/<image>.jpg` (fuera del repo) y
-`<out-dir>/../resize-summary.json` con el recibo de la corrida.
+`<out-dir>/{BCC,NO_BCC}/<image>.jpg` (fuera del repo),
+`<out-dir>/../resize-summary.json` con el recibo de la corrida y —
+con `--verificar` — un chequeo de conteos sin escritura.
+
+Quién consume sus salidas: la evaluación final de la fase S4 (inferencia del
+checkpoint release sobre el test 70/20/10, una sola vez); el recibo queda en
+`resize-summary.json` como evidencia para la tesis.
 
 Uso:
     uv run python resize_224_test.py --data-dir ~DIR --split-csv ~CSV --out-dir ~DIR_OUT
@@ -90,6 +95,10 @@ def load_test(split_csv: Path) -> pd.DataFrame:
     Por qué solo test.csv: la composición del test la definió la fase de
     splits y es fija; leer el GT original de ISIC arriesgaría re-barajar;
     nunca se lee el dataset crudo más allá del zip fuente.
+
+    Globales
+    --------
+    Ninguna (usa `leer_csv_csv_splits` importada de dermica_core.io).
     """
     df = leer_csv_csv_splits(split_csv)
     assert set(df["split"].unique()) == {"test"}, "el CSV debe ser únicamente del split test"
@@ -115,6 +124,10 @@ def main() -> int:
     Escribe <out-dir>/<label>/<image>.jpg y resize-summary.json en el
     directorio padre de <out-dir>; con --verificar audita conteos y tamaño
     sin escribir.
+
+    Globales
+    --------
+    `TRAIN_ZIP`, `ZIP_PREFIX`, `IMG_SIZE`, `JPEG_Q` (constantes del módulo).
     """
     ap = ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data-dir", type=Path, required=True, metavar="~DIR",
@@ -137,7 +150,7 @@ def main() -> int:
     zip_path = args.data_dir / TRAIN_ZIP
     written, skipped = 0, []
     with zipfile.ZipFile(zip_path) as zf:
-        entries = set(zf.namelist())
+        entries = set(zf.namelist())  # lookup O(1) de entradas del zip; se abre una sola vez
         for _, row in df.iterrows():
             image_id = row["image"]
             entry = f"{ZIP_PREFIX}{image_id}.jpg"
@@ -193,6 +206,10 @@ def verificar(out_dir: Path, split_csv: Path) -> int:
     Ninguno (solo lectura).
 
     Por qué conteos vs CSV: asegura 1:1 test↔zip tras el filtrado (barato).
+
+    Globales
+    --------
+    `IMG_SIZE` (constante del módulo; tamaño esperado 224×224).
     """
     df = load_test(split_csv)
     problems = []

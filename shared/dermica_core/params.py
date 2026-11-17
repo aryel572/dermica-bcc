@@ -3,6 +3,16 @@
 Qué contiene: `EXPECTED_SHA256`, el SHA-256 del asset `model-float16.tflite`
 que la app Android empaqueta y verifica antes de usarse.
 
+Constituye el contrato textual del release para cualquier recomputación en
+Python (p. ej. auditar que el asset del repo coincide con el valor publicado).
+Fase del pipeline: release 1.0.0 (S4) y empaquetado de la app Android (S5); el
+certificado vive también en ADR-0003 y en el test de release de la app.
+
+Qué recibe y qué produce: no lee flags ni escribe artefactos; expone valores
+constantes importables. Consumidores directos en Python: ninguno hoy (las
+verificaciones de la app Android viven en Kotlin); existe para que la tesis y
+futuras auditorías Python no dupliquen el literal.
+
 Procedencia de EXPECTED_SHA256
 ------------------------------
 Release 1.0.0 (tag `v1.0.0`): el modelo base va empaquetado como asset de la
@@ -25,4 +35,6 @@ dejaría sin consumidor y mentiría como "única fuente".
 
 # SHA-256 del asset model-float16.tflite del release 1.0.0 (1 945 356 bytes).
 # Procede de ADR-0003 / ModelManager.kt EXPECTED_SHA256 (ver docstring del módulo).
+# Consumidor esperado: cualquier auditoría Python del asset del release y la
+# sincronía con el valor que la app Android verifica en su primer arranque.
 EXPECTED_SHA256: str = "d62c401c5f66a7eccd5f752b2d7aa73964fe6f75a92acde3cae951b0d911cc0a"
