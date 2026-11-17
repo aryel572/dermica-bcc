@@ -26,11 +26,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.foundation.shape.CircleShape
@@ -62,6 +64,8 @@ fun HomeScreen(
     modelLoadError: String? = null,
     onImageBytesChosen: (ByteArray, String?) -> Unit,
     onOpenSubset: () -> Unit,
+    /** S7: CTA del estado vacío — lleva a Configuración, donde vive la descarga. */
+    onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -116,6 +120,14 @@ fun HomeScreen(
 
             MedicalDisclaimer()
             ModelStatusRow(modelState)
+
+            // S7: estado vacío con CTA visible — la descarga vive en Configuración.
+            if (modelState == ModelState.NO_MODEL || modelState == ModelState.FAILED) {
+                OutlinedButton(onClick = onOpenSettings, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.padding(end = 8.dp))
+                    Text("Descargar modelo")
+                }
+            }
 
             // Acción principal 1: imagen única → resultado.
             // Fix review-corroborated R3-001: con modelLoadError la CTA queda deshabilitada
@@ -213,11 +225,11 @@ private fun ModelStatusRow(modelState: ModelState) {
     }
 }
 
-/** Texto honesto cuando la inferencia no es posible todavía (descarga real llega en T5). */
+/** Texto honesto cuando la inferencia no es posible todavía (T5: la descarga vive en Configuración). */
 private fun modeloNoDisponibleTexto(state: ModelState): String = when (state) {
-    ModelState.NO_MODEL -> "Modelo no disponible: la descarga se habilitará en la próxima entrega."
+    ModelState.NO_MODEL -> "Modelo no disponible: descárgalo en Configuración."
     ModelState.COPYING -> "Preparando el modelo, un momento…"
-    ModelState.FAILED -> "No se pudo verificar el modelo. La restauración llegará en la próxima entrega."
+    ModelState.FAILED -> "No se pudo verificar el modelo. Descárgalo de nuevo en Configuración."
     ModelState.READY -> "" // no se usa: la CTA está habilitada
 }
 

@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -37,6 +38,8 @@ import com.dermica.bcc.ml.BccPredictor
 import com.dermica.bcc.ui.history.HistoryScreen
 import com.dermica.bcc.ui.home.HomeScreen
 import com.dermica.bcc.ui.result.ResultScreen
+import com.dermica.bcc.ui.settings.SettingsScreen
+import com.dermica.bcc.ui.settings.SettingsViewModel
 import com.dermica.bcc.ui.subset.SubsetScreen
 import com.dermica.bcc.ui.subset.SubsetViewModel
 import kotlinx.coroutines.launch
@@ -47,6 +50,7 @@ private enum class AppRoute {
     HISTORY,
     RESULT,
     SUBSET,
+    SETTINGS,
 }
 
 /**
@@ -60,6 +64,8 @@ private enum class AppRoute {
  *   ANTES de navegar a RESULT (S6: el historial refleja cada predicción).
  * - Aloja la ruta SUBSET: crea el SubsetViewModel acotado a la pantalla y navega
  *   a HISTORY al terminar (flujo completo en SubsetScreen/SubsetViewModel).
+ * - Aloja la ruta SETTINGS (Configuración, S7/S8): crea el SettingsViewModel
+ *   acotado a la pantalla; el borrado/descarga reaccionan aquí vía ModelManager.
  *
  * Las pantallas no conocen el Repository ni el Predictor: reciben estado + callbacks.
  */
@@ -150,7 +156,7 @@ fun AppRoot() {
         }
     }
 
-    val showNavBar = route == AppRoute.HOME || route == AppRoute.HISTORY
+    val showNavBar = route == AppRoute.HOME || route == AppRoute.HISTORY || route == AppRoute.SETTINGS
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -170,6 +176,12 @@ fun AppRoot() {
                         icon = { Icon(Icons.Filled.History, contentDescription = "Historial") },
                         label = { Text("Historial") },
                     )
+                    NavigationBarItem(
+                        selected = route == AppRoute.SETTINGS,
+                        onClick = { route = AppRoute.SETTINGS },
+                        icon = { Icon(Icons.Filled.Settings, contentDescription = "Configuración") },
+                        label = { Text("Configuración") },
+                    )
                 }
             }
         },
@@ -188,6 +200,7 @@ fun AppRoot() {
                     modelLoadError = modelError,
                     onImageBytesChosen = ::onImageChosen,
                     onOpenSubset = { route = AppRoute.SUBSET },
+                    onOpenSettings = { route = AppRoute.SETTINGS },
                 )
 
                 AppRoute.HISTORY -> HistoryScreen(items = historyItems)
@@ -209,8 +222,28 @@ fun AppRoot() {
                             modelLoadError = modelError,
                             onImageBytesChosen = ::onImageChosen,
                             onOpenSubset = { route = AppRoute.SUBSET },
+                            onOpenSettings = { route = AppRoute.SETTINGS },
                         )
                     }
+                }
+
+                AppRoute.SETTINGS -> {
+                    // viewModel acotado a la pantalla; sobrevive a rotaciones.
+                    val settingsViewModel: SettingsViewModel = viewModel(
+                        factory = viewModelFactory {
+                            initializer {
+                                SettingsViewModel(modelManager = modelManager)
+                            }
+                        },
+                    )
+                    val releaseState by settingsViewModel.releaseState.collectAsStateWithLifecycle()
+                    SettingsScreen(
+                        modelState = modelState,
+                        releaseState = releaseState,
+                        isApiKeyConfigured = settingsViewModel.isApiKeyConfigured,
+                        onDeleteModel = settingsViewModel::deleteModel,
+                        onCheckDownload = settingsViewModel::checkForUpdateOrDownload,
+                    )
                 }
 
                 AppRoute.SUBSET -> {
