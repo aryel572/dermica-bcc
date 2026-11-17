@@ -22,7 +22,11 @@ import kotlinx.coroutines.launch
 import kotlin.coroutines.coroutineContext
 import java.io.File
 
-/** Imagen candidata dentro de la carpeta SAF, ya resuelta a su URI (S2). */
+/**
+ * Imagen candidata dentro de la carpeta SAF, ya resuelta a su URI (S2).
+ * Consumidor: SubsetViewModel (abre el stream por contentResolver; nunca copia
+ * el archivo) y SubsetScreen (solo para el contador done/total).
+ */
 data class SubsetImage(
     val name: String,
     val uri: Uri,
@@ -31,6 +35,9 @@ data class SubsetImage(
 /**
  * Entrada de una subcarpeta en la corrida multi (S5-multi): ya inspeccionada por
  * el adapter Android (imágenes compatibles + texto del ground truth).
+ *
+ * Consumidor: [SubsetViewModel.startMultiRun]; la construye el adapter vía
+ * [SubsetFolderInput] para cada subcarpeta que SubsetScanner calificó.
  *
  * @param folderLabel nombre de la subcarpeta; queda etiquetado en cada card del historial.
  * @param groundTruthJson texto del ground_truth.json de la subcarpeta; null = no se pudo
@@ -46,7 +53,10 @@ data class SubsetFolderInput(
  * Resumen final del modo subconjunto (S4/S5): lo consume SubsetResultScreen y
  * alimenta la card del historial (S6).
  *
- * @param totalImages imágenes imagen (*.jpg/.jpeg/.png) encontradas en la carpeta.
+ * Lo produce processFolder al cerrar una carpeta; en modo single navega a
+ * [SubsetRunState.Done] con él; en multi el lote lo agrega por subcarpeta.
+ *
+ * @param totalImages imágenes (*.jpg/.jpeg/.png) encontradas en la carpeta.
  * @param processed imágenes con etiqueta e inferencia completada (entran a la matriz).
  * @param excluded imágenes sin entrada en el ground truth (excluidas y contadas, S3).
  * @param failed imágenes con etiqueta que no se pudieron leer/decodificar (se omiten
@@ -68,6 +78,7 @@ data class SubsetSummary(
 /**
  * Fallo acotado de UNA subcarpeta dentro de la corrida multi (S5-multi): nombre
  * + motivo corto. Nunca aborta el lote; se acumula y se muestra al final.
+ * Consumidor: [SubsetBatchSummary.failed] → MultiDoneContent (lista de 3 + «…y N más»).
  */
 data class FolderFailure(
     val folderLabel: String,
@@ -75,7 +86,9 @@ data class FolderFailure(
 )
 
 /**
- * Resumen de la corrida multi (S5-multi): lo consume la pantalla final.
+ * Resumen de la corrida multi (S5-multi): lo consume la pantalla final
+ * (MultiDoneContent en SubsetScreen). Lo publica el VM en
+ * [SubsetRunState.MultiDone].
  *
  * @param completed subcarpetas procesadas y persistidas en el historial.
  * @param failed subcarpetas omitidas o no persistidas, con motivo corto.
@@ -89,10 +102,16 @@ data class SubsetBatchSummary(
  * Estados del flujo subconjunto (S2/S3/S4 · S5-multi). Cola de trabajo explícita
  * para la UI: una sola fuente de verdad, sin observables paralelos.
  *
+ * Contrato de estados: [Idle] (sin trabajo) → [Running] → estados finales
+ * [Done] | [MultiDone] | [Error] | [Cancelled].
+ *
  * - [Running] lleva el avance (imágenes de la carpeta actual) y, en multi, la
  *   subcarpeta en curso ([Running.currentFolder] no null) + posición en el lote.
  * - Estados finales: [Done] (carpeta única, T4), [MultiDone] (lote, S5-multi),
  *   [Error] y [Cancelled]; nunca hay trabajo huérfano visible.
+ *
+ * Quién lo consume: SubsetScreen (collectAsStateWithLifecycle + when(state)).
+ * El VM sobrescribe `_state` de forma monótona; la UI pinta solo el último.
  */
 sealed interface SubsetRunState {
     data object Idle : SubsetRunState
@@ -118,9 +137,10 @@ sealed interface SubsetRunState {
 
     data class Done(val summary: SubsetSummary) : SubsetRunState
 
-    /** Lote multi terminado (S5-multi): N subconjuntos persistidos + fallos acotados. */
+    /** Lote multi terminado (S5-multi): N subconjuntos persistidos + fallos acotados. Estado final del flujo multi; lo pinta MultiDoneContent. */
     data class MultiDone(val summary: SubsetBatchSummary) : SubsetRunState
 
+    /** Fallo terminal previo o durante la corrida; mensaje ya redactado para la UI (ErrorContent). */
     data class Error(val message: String) : SubsetRunState
 
     /**
@@ -151,18 +171,35 @@ sealed interface SubsetRunState {
  * final: decoupled del BccPredictor compartido de la imagen única (que puede
  * cerrarse/recrearse en otra pantalla con el ciclo de vida del modelo) y el coste
  * es una carga por corrida (~2 MB, despreciable frente a la inferencia).
+ *
+ * Quién lo consume: SubsetScreen (state + callbacks). Quien lo crea: AppRoot
+ * (AppRoute.SUBSET) con factory (modelFileProvider desde ModelManager y el
+ * HistoryRepository compartido). Persistencia: HistoryRepository.addSubsetResult
+ * por carpeta; lecturas en Dispatchers.Default dentro de [viewModelScope].
+ *
+ * @param modelFileProvider proveedor perezoso del archivo verificado del modelo;
+ *        null = el VM publica Error honesto (nunca lanza).
+ * @param repository historial compartido (Room) al que se persiste cada carpeta.
  */
 class SubsetViewModel(
     private val modelFileProvider: () -> File?,
     private val repository: HistoryRepository,
 ) : ViewModel() {
 
+    /** Estado privado mutable de [state]; la UI solo ve la versión asStateFlow (sin setters). */
     private val _state = MutableStateFlow<SubsetRunState>(SubsetRunState.Idle)
+
+    /** Salida pública hacia SubsetScreen: fase actual del flujo. Única fuente de verdad de la cola. */
     val state: StateFlow<SubsetRunState> = _state.asStateFlow()
 
+    /** Corrida en vuelo; permite cancelar y detectar doble-toque (startRun/startMultiRun). */
     private var runJob: Job? = null
 
-    /** Plan interno de una carpeta: ground truth ya parseado (single) o pendiente (multi). */
+    /**
+     * Plan interno de una carpeta: ground truth ya parseado (single) o pendiente
+     * (multi). `groundTruth == null` ⇒ se parsea dentro del bucle, con `groundTruthJson`
+     * como entrada; así un JSON corrupto de una subcarpeta no tumba el lote.
+     */
     private data class FolderPlan(
         val label: String,
         val images: List<SubsetImage>,
@@ -170,23 +207,39 @@ class SubsetViewModel(
         val groundTruthJson: String? = null,
     )
 
-    /** Publica un error previo al procesado (p.ej. SAF no devolvió la carpeta/JSON legible). */
+    /**
+     * Publica un error previo al procesado (p.ej. SAF no devolvió la carpeta/JSON legible).
+     * Llamado por prepareAndRun cuando el adapter devuelve TreeResolution.Fail.
+     */
     fun fail(message: String) {
         _state.value = SubsetRunState.Error(message)
     }
 
-    /** Vuelve al selector de carpeta («Otra carpeta» / «Reintentar»). */
+    /**
+     * Vuelve al selector de carpeta («Otra carpeta» / «Reintentar»).
+     * Solo cambia la fase visible (Idle); no cancela nada: la corrida ya terminó
+     * cuando aparecen esos botones.
+     */
     fun reset() {
         _state.value = SubsetRunState.Idle
     }
 
-    /** Cancelación cooperativa: el bucle corta en la siguiente imagen o subcarpeta (S2/S5-multi). */
+    /**
+     * Cancelación cooperativa: el bucle corta en la siguiente imagen o subcarpeta (S2/S5-multi).
+     * Llamado por el botón Cancelar (RunningContent) vía viewModel::cancel. No inventa
+     * un resultado: la carpeta en curso se descarta y se publica Cancelled.
+     */
     fun cancel() {
         runJob?.cancel()
     }
 
     /**
      * Lanza el procesado de UNA carpeta (flujo T4 intacto).
+     *
+     * @param folderLabel nombre visible de la carpeta (queda en el historial y en el resultado).
+     * @param images imágenes candidatas en orden estable (adapter ya las inspeccionó).
+     * @param groundTruthJson texto del ground_truth.json de la raíz.
+     * @param contentResolver resolver SAF del llamador (la VM lo recibe y delega en él la apertura de streams).
      *
      * Precondiciones verificadas aquí (la UI ya las filtra, aquí es defensa en profundidad):
      * ground_truth.json parsea; si no, se publica Error y no se procesa nada (S3).
@@ -227,6 +280,7 @@ class SubsetViewModel(
      * nombre de la subcarpeta) y los fallos acotados no tumban el lote.
      *
      * @param folders subcarpetas calificadas por el scanner (adapter ya las inspeccionó).
+     * @param contentResolver resolver SAF del llamador.
      */
     fun startMultiRun(
         folders: List<SubsetFolderInput>,
@@ -266,6 +320,14 @@ class SubsetViewModel(
      * Motor de la corrida (single y multi comparten pipeline). [multi] decide el
      * estado final: Done(carpeta única) o MultiDone(lote); Cancelled lleva el conteo
      * de subconjuntos ya persistidos en multi.
+     *
+     * @param plans carpetas a procesar (single = 1 plan con groundTruth ya parseado).
+     * @param multi true = lote S5-multi; false = T4 (una carpeta).
+     * @param modelFile archivo del modelo verificado (ya resuelto por el caller).
+     * @param contentResolver resolver SAF para abrir los streams de las imágenes.
+     *
+     * Corre en [viewModelScope] con Dispatchers.Default; la cancelación corta entre
+     * subcarpetas y entre imágenes vía ensureActive().
      */
     private fun startInternal(
         plans: List<FolderPlan>,
@@ -356,6 +418,16 @@ class SubsetViewModel(
      * Procesa UNA carpeta completa: matcher + inferencia + matriz + persistencia.
      * Publica [SubsetRunState.Done] sólo en modo single (contrato T4 intacto);
      * en multi devuelve el resumen y el autor del lote decide el estado final.
+     *
+     * @param plan carpeta a procesar con sus imágenes y ground truth (o JSON pendiente).
+     * @param groundTruth ground truth ya parseado de esta carpeta.
+     * @param predictor motor ya cargado por startInternal (compartido por la corrida).
+     * @param contentResolver resolver SAF para abrir cada imagen.
+     * @param multi true = lote (Done no se publica; el autor del lote decide el final).
+     * @param folderIndex posición 1-based de la carpeta en el plan (1 en T4).
+     * @param folderCount total de carpetas de la corrida (1 en T4).
+     * @param foldersDone subcarpetas ya cerradas en esta corrida (0 en T4).
+     * @return resumen de la carpeta (lo consume startInternal para el estado final).
      *
      * @throws CancellationException si el usuario cancela (la carpeta en curso no se
      *         persiste; las subcarpetas cerradas sí).

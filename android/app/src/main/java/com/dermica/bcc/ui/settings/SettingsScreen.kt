@@ -39,6 +39,9 @@ import java.util.Locale
 
 // Datos estáticos del release 1.0.0 (asset base + metrics JSON del release);
 // 1.0.0 comparte versión con la app hoy. AUPRC = en validación (val), no en test.
+// Consumidores: filas InfoRow (versión/cuantización) y ModelCard (detalles).
+// Al publicar un release nuevo estos textos y el MODEL_SHA_TRUNCATED se
+// actualizan a la vez (mismo hito, no se desincronizan).
 private const val MODEL_VERSION_TEXT = "1.0.0"
 private const val MODEL_DETAILS_TEXT = "v1.0.0 · float16 · 1.95 MB · AUPRC 0.7786 en validación"
 private const val MODEL_QUANTIZATION_TEXT = "float16"
@@ -49,6 +52,21 @@ private const val MODEL_QUANTIZATION_TEXT = "float16"
  *
  * State hoisting: la pantalla recibe estado + callbacks; el trabajo vive en
  * [SettingsViewModel]; la confirmación del borrado es estado local de UI.
+ *
+ * Invocada por AppRoot en AppRoute.SETTINGS (viewModel acotado a la pantalla,
+ * creado allí con factory; sobrevive a rotaciones). Flujos de datos:
+ * - modelState: ModelManager.state (StateFlow) → AppRoot → aquí y a ModelCard.
+ * - releaseState: SettingsViewModel.releaseState (StateFlow<ReleaseUiState>) →
+ *   AppRoot → aquí → DownloadProgress (progreso/error/éxito del flujo S8).
+ * - onDeleteModel/onCheckDownload delegan tal cual al ViewModel; ninguno ejecuta
+ *   trabajo en la pantalla.
+ *
+ * @param modelState estado del modelo; READY muestra las filas del release y los botones de borrado.
+ * @param releaseState fase del flujo de descarga (Idle/Checking/Downloading/Success/UpToDate/Error).
+ * @param isApiKeyConfigured false = CTA de descarga deshabilitada y aviso honesto (nunca se expone la clave).
+ * @param onDeleteModel borra el modelo vía SettingsViewModel.deleteModel (con confirmación local).
+ * @param onCheckDownload dispara SettingsViewModel.checkForUpdateOrDownload (ping → decisión → descarga).
+ * @param modifier slot de layout para la Surface raíz.
  */
 @Composable
 fun SettingsScreen(
@@ -60,6 +78,8 @@ fun SettingsScreen(
     onCheckDownload: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // `confirmDelete` nunca sale de la pantalla: es presentación del diálogo, no
+    // estado de negocio; por eso vive en remember y no en el ViewModel.
     var confirmDelete by remember { mutableStateOf(false) }
     val modelReady = modelState == ModelState.READY
     val working = releaseState is ReleaseUiState.Checking || releaseState is ReleaseUiState.Downloading
@@ -157,7 +177,7 @@ fun SettingsScreen(
     }
 }
 
-/** Estado del modelo always-visible y coherente con ModelState (S1/S7). */
+/** Estado del modelo always-visible y coherente con ModelState (S1/S7). Invocada por SettingsScreen. */
 @Composable
 private fun ModelCard(modelState: ModelState) {
     ElevatedCard(modifier = Modifier.fillMaxWidth()) {
@@ -232,7 +252,7 @@ private fun ModelCard(modelState: ModelState) {
     }
 }
 
-/** Fila etiqueta/valor para los datos estáticos del release (S7). */
+/** Fila etiqueta/valor para los datos estáticos del release (S7). Invocada por SettingsScreen; solo pinta texto, no interactúa. */
 @Composable
 private fun InfoRow(label: String, value: String) {
     Row(
@@ -250,7 +270,9 @@ private fun InfoRow(label: String, value: String) {
 }
 
 /**
- * Progreso/resultados del flujo de descarga (S8). Durante el ping se avisa del
+ * Progreso/resultados del flujo de descarga (S8). Invocada por SettingsScreen;
+ * pinta EXCLUSIVAMENTE lo que trae el ReleaseUiState del ViewModel (incluido el
+ * mensaje de error ya redactado en español). Durante el ping se avisa del
  * arranque en frío de Render free (30–60 s); durante la descarga se muestran
  * los bytes (porcentaje si el servidor declara Content-Length, o bytes leídos
  * si viene chunked).
@@ -302,7 +324,12 @@ private fun DownloadProgress(state: ReleaseUiState) {
     }
 }
 
-/** Etiqueta de la descarga: MB leídos (y total/porcentaje si el servidor lo declara). */
+/**
+ * Etiqueta de la descarga: MB leídos (y total/porcentaje si el servidor lo declara).
+ *
+ * @param state fase [ReleaseUiState.Downloading] con bytesRead y totalBytes (nullable).
+ * @return texto listo para pintar; con total declara "% de X.Y MB (Z%)", sin total solo MB leídos.
+ */
 private fun downloadingLabel(state: ReleaseUiState.Downloading): String {
     val readMb = state.bytesRead / 1_000_000.0
     val total = state.totalBytes
@@ -317,17 +344,20 @@ private fun downloadingLabel(state: ReleaseUiState.Downloading): String {
 
 // SHA-256 del asset base 1.0.0, truncado a 8 hex para lectura visual (el valor
 // completo se verifica programáticamente contra ModelManager.EXPECTED_SHA256).
+// Único consumidor: InfoRow «SHA-256» cuando modelState == READY.
 private const val MODEL_SHA_TRUNCATED = "d62c401c…"
 
 /**
  * Entrada de la leyenda: sigla (línea en negrita) + definición breve debajo
  * (T6/S5). Sin fórmulas: la app solo muestra resultados, nunca cómo se calculan.
+ * Consumida por [SIGLAS] (única lista) y renderizada por SiglasLegend.
  */
 private data class GlossaryEntry(val sigla: String, val definition: String)
 
 // Copy sugerido por producto (T6); tono neutral, sin dramatizar ni prometer
 // diagnóstico. Se incluye la definición completa tras la sigla (no solo el
 // nombre corto) para que quien nunca usó una matriz de confusión lo entienda.
+// Único consumidor: SiglasLegend (renderizado en la última sección de Configuración).
 private val SIGLAS = listOf(
     GlossaryEntry(
         sigla = "TA",
@@ -366,6 +396,8 @@ private val SIGLAS = listOf(
  * nomenclatura del resultado de subconjunto; la definición va debajo de la sigla
  * en negrita como un glosario plano, sin fórmula alguna. TalkBack lee cada par
  * "SIGLA — definición" en orden de aparición.
+ *
+ * Invocada por SettingsScreen como última sección (tras Actualización).
  */
 @Composable
 private fun SiglasLegend() {

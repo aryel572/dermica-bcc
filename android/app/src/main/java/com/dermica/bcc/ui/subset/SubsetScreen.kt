@@ -47,6 +47,21 @@ import com.dermica.bcc.data.model.ModelState
  * [SubsetViewModel] (viewModelScope), que sobrevive a rotaciones de pantalla.
  * La app NO adivina el subconjunto por nombre de carpeta: la referencia viaja en
  * ground_truth.json dentro del árbol elegido.
+ *
+ * Invocada por AppRoot en AppRoute.SUBSET (viewModel creado allí con factory,
+ * acotado a la pantalla). Flujo de datos: SubsetViewModel.state
+ * (StateFlow<SubsetRunState>) → aquí vía collectAsStateWithLifecycle → when(state)
+ * decide qué rama pintar (Idle/Pick → Running → Done/MultiDone/Error/Cancelled).
+ *
+ * Coroutine: la única coroutine propia es la del picker SAF (implícita en el
+ * launcher); la corrida la lanza el ViewModel. onBack y onViewHistory son
+ * callbacks de navegación sin datos.
+ *
+ * @param modelState habilita «Elegir carpeta» solo con el modelo READY.
+ * @param viewModel VM del flujo; creado una vez por AppRoot; expone state y cancel/reset.
+ * @param onBack vuelve a HOME (único escape; el back del sistema también).
+ * @param onViewHistory navega a HISTORY.
+ * @param modifier slot de layout para el Box raíz.
  */
 @Composable
 fun SubsetScreen(
@@ -110,6 +125,14 @@ fun SubsetScreen(
  * - RAÍZ con ground_truth.json → flujo T4 (una sola carpeta, como hoy).
  * - PADRE con subcarpetas calificadas → lote multi (todas en una corrida).
  * - Nada elegible → Error state con botón Reintentar/Volver. Nunca crash (S3).
+ *
+ * Se llama directo al volver del picker SAF; es trabajo de filesystem síncrono
+ * (DocumentFile es liviano: lista nombres, no copia bytes) y por eso no necesita
+ * hilo propio: la inferencia pesada vive en el ViewModel.
+ *
+ * @param context contexto de la Activity (contentResolver + DocumentFile).
+ * @param treeUri URI del árbol devuelto por OpenDocumentTree.
+ * @param viewModel VM que recibe el plan resuelto vía startRun/startMultiRun/fail.
  */
 private fun prepareAndRun(context: Context, treeUri: Uri, viewModel: SubsetViewModel) {
     when (val resolution = resolveTree(context, treeUri)) {
@@ -127,7 +150,7 @@ private fun prepareAndRun(context: Context, treeUri: Uri, viewModel: SubsetViewM
     }
 }
 
-/** Selector de carpeta (CTA) o estado vacío cuando el modelo no está disponible (patrón T3). */
+/** Selector de carpeta (CTA) o estado vacío cuando el modelo no está disponible (patrón T3). Invocada por SubsetScreen cuando state == Idle. */
 @Composable
 private fun IdleContent(
     modelReady: Boolean,
@@ -188,6 +211,11 @@ private fun IdleContent(
 /**
  * Progreso honesto en curso (S2): en carpeta única, sólo el avance de la carpeta;
  * en multi (currentFolder != null), posición en el lote + barra general + barra por imagen.
+ * Invocada por SubsetScreen cuando state is Running.
+ *
+ * Contrato UI: `state.done/state.total` describe SOLO la carpeta actual; la
+ * barra general del lote (batchProgress) suma las carpetas cerradas más la
+ * fracción de la actual. El botón Cancelar emite viewModel.cancel (cooperativo).
  */
 @Composable
 private fun RunningContent(
@@ -267,7 +295,12 @@ private fun RunningContent(
     }
 }
 
-/** Avance general del lote (0..1): subcarpetas cerradas + fracción de la carpeta actual. */
+/**
+ * Avance general del lote (0..1): subcarpetas cerradas + fracción de la carpeta actual.
+ *
+ * @param state fase Running; folderCount ≤ 0 devuelve 0 (nunca NaN).
+ * @return proporción [0,1] para LinearProgressIndicator.
+ */
 private fun batchProgress(state: SubsetRunState.Running): Float {
     if (state.folderCount <= 0) return 0f
     val perImage = if (state.total > 0) state.done.toFloat() / state.total else 0f
@@ -277,6 +310,7 @@ private fun batchProgress(state: SubsetRunState.Running): Float {
 /**
  * Lote multi terminado (S5-multi): «Listo: procesé N subconjuntos» + lista corta
  * de fallos. El historial ya tiene una card por subcarpeta; aquí solo el resumen.
+ * Invocada por SubsetScreen cuando state is MultiDone.
  */
 @Composable
 private fun MultiDoneContent(
@@ -344,7 +378,7 @@ private fun MultiDoneContent(
     }
 }
 
-/** Error previo o durante el procesado: explicación + Reintentar/Volver (S3). */
+/** Error previo o durante el procesado: explicación + Reintentar/Volver (S3). Invocada por SubsetScreen cuando state is Error. */
 @Composable
 private fun ErrorContent(
     message: String,
@@ -381,7 +415,13 @@ private fun ErrorContent(
     }
 }
 
-/** Cancelación pedida por el usuario: estado final honesto. Las subcarpetas ya persistidas se informan. */
+/**
+ * Cancelación pedida por el usuario: estado final honesto. Las subcarpetas ya persistidas se informan.
+ * Invocada por SubsetScreen cuando state is Cancelled.
+ *
+ * @param savedSubsets subconjuntos ya persistidos antes del corte (0 = ninguno;
+ *        la carpeta en curso nunca se persiste a medias).
+ */
 @Composable
 private fun CancelledContent(
     savedSubsets: Int,

@@ -44,7 +44,11 @@ import com.dermica.bcc.ui.subset.SubsetScreen
 import com.dermica.bcc.ui.subset.SubsetViewModel
 import kotlinx.coroutines.launch
 
-/** Rutas de la app (single activity, S9). RESULT/SUBSET no muestran bottom navigation. */
+/**
+ * Rutas internas de la app (single activity, S9). Consumidor único: AppRoot
+ * (when(route)). RESULT y SUBSET no muestran bottom navigation porque ocupan
+ * pantalla completa y tienen su propia salida (volver / ver historial).
+ */
 private enum class AppRoute {
     HOME,
     HISTORY,
@@ -54,7 +58,7 @@ private enum class AppRoute {
 }
 
 /**
- * Raíz de la aplicación (single activity).
+ * Raíz de la aplicación (single activity). La monta MainActivity (setContent).
  *
  * Responsabilidades del owner (state hoisting):
  * - Construye singletons de proceso: ModelManager, HistoryDatabase/Repository.
@@ -67,11 +71,25 @@ private enum class AppRoute {
  * - Aloja la ruta SETTINGS (Configuración, S7/S8): crea el SettingsViewModel
  *   acotado a la pantalla; el borrado/descarga reaccionan aquí vía ModelManager.
  *
+ * Contrato con las pantallas (state hoisting): ninguna pantalla conoce el
+ * Repository ni el Predictor; todas reciben estado por parámetros y emiten
+ * eventos por callbacks. Los ViewModels de SUBSET y SETTINGS se crean aquí con
+ * `viewModel()` y fábrica explícita, acotados a su pantalla: sobreviven a
+ * rotaciones pero no a la navegación (se recrean al entrar de nuevo).
+ *
+ * Flujos de datos principales:
+ * - Historial: HistoryDatabase → HistoryRepository.items (Flow) → aquí vía
+ *   collectAsStateWithLifecycle → HistoryScreen(items). Las pantallas solo pintan.
+ * - Modelo: ModelManager.state (StateFlow<ModelState>) → aquí → HomeScreen,
+ *   SettingsScreen y SubsetScreen (para habilitar/deshabilitar CTAs).
+ *
  * Las pantallas no conocen el Repository ni el Predictor: reciben estado + callbacks.
  */
 @Composable
 fun AppRoot() {
     val context = LocalContext.current
+    // Ámbito de composición: quien cancela las escrituras al historial y las
+    // predicciones al abandonar la pantalla es el ciclo de vida de la composición.
     val appScope = rememberCoroutineScope()
     val modelManager = remember { ModelManager(context.applicationContext, appScope) }
     val repository = remember { HistoryRepository(HistoryDatabase.getInstance(context.applicationContext).historyDao()) }
@@ -79,15 +97,22 @@ fun AppRoot() {
     val modelState by modelManager.state.collectAsStateWithLifecycle()
     val historyItems by repository.items.collectAsStateWithLifecycle(initialValue = emptyList())
 
+    // Ruta actual de la navegación manual (sin Navigation Compose): HOME es el
+    // arranque; RESULT/SUBSET son destinos de pantalla completa (sin bottom bar).
     var route by remember { mutableStateOf(AppRoute.HOME) }
+    // Predicción de imagen única en vuelo: la usa HomeScreen (CTA «Procesando…»).
     var predicting by remember { mutableStateOf(false) }
+    // Error de cara al usuario; null = sin error. Detalle técnico solo por Log.
     var predictionError by remember { mutableStateOf<String?>(null) }
+    // Payload del resultado que RESULT pinta; null = no hay nada que mostrar.
     var result by remember { mutableStateOf<PredictionUi?>(null) }
     // Fix review-corroborated R3-001: si LiteRT no puede inicializar, modelState
     // queda en READY con predictor null; sin esto cada tap en «Imagen única» mostraba
     // «El modelo todavía no está listo» (mensaje engañoso) sin log ni salida.
     // Ahora se loguea el fallo y se deshabilita la CTA con un mensaje claro.
     var modelError by remember { mutableStateOf<String?>(null) }
+    // Motor de inferencia perezoso: se crea cuando ModelState pasa a READY y se
+    // invalida (close) si el modelo deja de estar disponible (borrado/fallo).
     val predictorBox = remember { mutableStateOf<BccPredictor?>(null) }
 
     // Libera el Interpreter cuando el owner (actividad) sale de composición.
@@ -95,6 +120,8 @@ fun AppRoot() {
         onDispose { predictorBox.value?.close() }
     }
 
+    // Garantiza el modelo en el primer arranque: descarga/copia/verificación; el
+    // resultado llega por ModelState (StateFlow), no por callback.
     LaunchedEffect(Unit) { modelManager.ensureModel() }
 
     // Predictor se crea perezosamente cuando el modelo está listo y se invalida
@@ -122,7 +149,15 @@ fun AppRoot() {
         }
     }
 
-    /** Dispara la predicción de imagen única y persiste el evento en el historial. */
+    /**
+     * Callback de HomeScreen: recibe los bytes leídos por su picker y persiste y
+     * navega. Llamado desde el launcher del picker (fuera de composición) y desde
+     * el botón «Elegir imagen»; corre en [appScope] (ámbito de composición).
+     *
+     * Orden intencional: primero el historial (addImagePrediction), después el
+     * estado `result` y el route=RESULT. Si la escritura del historial fallara,
+     * salta al catch y el usuario ve el error sin navegar (S6 estricto).
+     */
     fun onImageChosen(bytes: ByteArray, imageName: String?) {
         val predictor = predictorBox.value
         if (predictor == null) {
@@ -156,6 +191,8 @@ fun AppRoot() {
         }
     }
 
+    // Bottom navigation solo en destinos de nivel superior; RESULT y SUBSET son
+    // hijas a pantalla completa con su propia salida y no la muestran.
     val showNavBar = route == AppRoute.HOME || route == AppRoute.HISTORY || route == AppRoute.SETTINGS
 
     Scaffold(
@@ -272,4 +309,7 @@ fun AppRoot() {
     }
 }
 
+// Etiqueta de Logcat de este archivo; solo se loguea la causa del fallo del
+// motor (nunca contenido de imágenes ni claves). Consumida por Log.e del
+// LaunchedEffect(modelState) (R3-001).
 private const val TAG = "AppRoot"

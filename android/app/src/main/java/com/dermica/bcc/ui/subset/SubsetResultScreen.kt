@@ -27,6 +27,16 @@ import java.util.Locale
  * en la card del historial con el ojo (flujo idéntico al de la imagen única, S5/S6).
  *
  * Las fórmulas NO se muestran jamás (S4): solo los resultados.
+ *
+ * Invocada por SubsetScreen cuando state is SubsetRunState.Done (flujo T4, una
+ * carpeta). En el flujo multi (MultiDone) no se usa: el lote muestra su propio
+ * resumen y las cards viven en el historial. State hoisting: recibe el resumen
+ * completo y dos callbacks de navegación; no escribe ni lanza coroutines.
+ *
+ * @param summary resumen del procesado de la carpeta (cobertura, TA/NFS/PEO, historySaved).
+ * @param onAnotherFolder vuelve a Idle para procesar otra carpeta (reset del VM).
+ * @param onViewHistory navega a HISTORY.
+ * @param modifier slot de layout para la Surface raíz.
  */
 @Composable
 fun SubsetResultScreen(
@@ -99,7 +109,12 @@ fun SubsetResultScreen(
     }
 }
 
-/** Celda de métrica grande: etiqueta pequeña + valor protagonista (solo resultado, sin fórmula). */
+/**
+ * Celda de métrica grande: etiqueta pequeña + valor protagonista (solo resultado,
+ * sin fórmula). Componente interno crítico (patrón visual S5): TA/NFS/PEO en
+ * grande; `label` corta en caps (TA, NFS, PEO), `value` ya formateado por el
+ * caller (Locale.US). Invocada por SubsetResultScreen; no interactúa.
+ */
 @Composable
 private fun BigStatCell(label: String, value: String, modifier: Modifier = Modifier) {
     Surface(
@@ -117,7 +132,13 @@ private fun BigStatCell(label: String, value: String, modifier: Modifier = Modif
     }
 }
 
-/** Línea de cobertura honesta: procesadas, excluidas y (si hubo) no decodificables. */
+/**
+ * Línea de cobertura honesta: procesadas, excluidas y (si hubo) no decodificables.
+ *
+ * @param summary resumen del procesado; totalImages = imágenes encontradas, processed =
+ *        con etiqueta e inferencia completada.
+ * @return texto listo para pintar, p.ej. «14 de 15 imágenes procesadas · 1 sin etiqueta excluidas».
+ */
 private fun coverageText(summary: SubsetSummary): String {
     val base = "${summary.processed} de ${summary.totalImages} imágenes procesadas"
     val excluded = if (summary.excluded > 0) " · ${summary.excluded} sin etiqueta excluidas" else ""
@@ -125,5 +146,11 @@ private fun coverageText(summary: SubsetSummary): String {
     return base + excluded + failed
 }
 
-/** Formato numérico con punto decimal y un decimal (Locale.US, estable entre dispositivos). */
+/**
+ * Formato numérico con punto decimal y un decimal (Locale.US, estable entre
+ * dispositivos). Consumido por las celdas TA y PEO.
+ *
+ * @param value valor en la unidad ya convertida (porcentaje 0–100).
+ * @return cadena con un decimal, p.ej. "73.3".
+ */
 private fun formatNumber(value: Double): String = String.format(Locale.US, "%.1f", value)
