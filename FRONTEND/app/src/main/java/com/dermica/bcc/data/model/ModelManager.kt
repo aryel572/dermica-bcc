@@ -99,10 +99,49 @@ class ModelManager(
         }
     }
 
-    /** SHA-256 esperado del asset base (release 1.0.0, float16). Constante, no secreto. */
+    /**
+     * Publica el modelo descargado del servidor (S8): verifica el temporal [tmpFile]
+     * contra [expectedSha256] y, solo si íntegro, lo instala atómicamente como
+     * filesDir/model.tflite (rename; mismo directorio). El modelo actual NUNCA se
+     * borra antes de la verificación: si el temporal no pasa, se descarta solo él.
+     *
+     * Efectos: limpia el flag model_deleted_by_user (el modelo vuelve a existir)
+     * y publica READY o FAILED.
+     *
+     * @return true si quedó instalado; false si la verificación falló (nada cambió).
+     */
+    suspend fun installDownloadedModel(tmpFile: File, expectedSha256: String): Boolean {
+        mutex.withLock {
+            val integrityOk = runCatching { Sha256.ofFile(tmpFile) == expectedSha256 }.getOrDefault(false)
+            if (!integrityOk) {
+                Log.e(TAG, "el modelo descargado no superó la verificación; se descarta")
+                tmpFile.delete()
+                return false
+            }
+            // renameTo en el mismo directorio es atómico. Si fallara pese a ello
+            // (I/O transitorio), se borra el anterior y se reintenta una vez;
+            // nunca queda model.tflite a medias porque el rename es point-in-time.
+            if (!tmpFile.renameTo(modelFile)) {
+                modelFile.delete()
+                if (!tmpFile.renameTo(modelFile)) {
+                    Log.e(TAG, "no se pudo renombrar el modelo descargado")
+                    tmpFile.delete()
+                    return false
+                }
+            }
+            context.modelDataStore.edit { prefs -> prefs[KEY_DELETED_BY_USER] = false }
+            _state.value = ModelState.READY
+            return true
+        }
+    }
+
     companion object {
         const val EXPECTED_SHA256 = "d62c401c5f66a7eccd5f752b2d7aa73964fe6f75a92acde3cae951b0d911cc0a"
+        private const val MODEL_DOWNLOAD_TMP_NAME = "$MODEL_FILE_NAME.download"
     }
+
+    /** Temporal para la descarga del release (mismo filesystem: el rename posterior es atómico). */
+    fun downloadTemporaryFile(): File = File(filesDir, MODEL_DOWNLOAD_TMP_NAME)
 
     // Fix reviewer-corroborated R4-002: cualquier fallo al leer las prefs se
     // interpreta como "no borrado por el usuario" (fallo seguro: re-copia el asset).
