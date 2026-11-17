@@ -151,9 +151,9 @@ jobs:
               fail=1
             fi
           }
-          scan "rutas locales de la máquina" i '/home/|Escritorio|resultados/|APP_DERMICA_DOCS|parents\['
-          scan "carpetas de datos externos"    - 'DATA_CRUDA|TESIS/' .gitignore
-          scan "token de entorno colab"        i 'colab' README.md model/pyproject.toml model/train_bcn.py uv.lock
+          scan "rutas locales de la máquina" i '/home/|Escritorio|resultados/|APP_DERMICA_DOCS|parents\[' .github/workflows/ci.yml
+          scan "carpetas de datos externos"    - 'DATA_CRUDA|TESIS/' .gitignore .github/workflows/ci.yml
+          scan "token de entorno colab"        i 'colab' README.md model/pyproject.toml model/train_bcn.py uv.lock .github/workflows/ci.yml
           if [ "$fail" -ne 0 ]; then
             echo "::error::guard-paths: referencias locales/externas rastreadas; usa rutas relativas, variables de entorno o contenido publicado"
             exit 1
