@@ -39,20 +39,28 @@ android {
     // SDK local solo tiene android-35 y build-tools 35: se fija explícitamente.
     buildToolsVersion = "35.0.0"
 
-    // Firma del build release. Las credenciales viven en local.properties (gitignored);
+    // Firma del build release. Las credenciales viven en android/local.properties (gitignored);
     // el keystore en ~/.android/dermica-release.jks (fuera del repositorio, jamás se commitea).
-    // Sin credenciales, el build falla aquí mismo con un mensaje claro.
-    fun requiredRelease(key: String): String =
-        localProps.getProperty(key) ?: error(
-            "Falta $key en android/local.properties; crea la credencial y reintenta el build release"
-        )
+    // Sin credenciales, las tareas de Debug/Tests funcionan con normalidad; solo una tarea de
+    // firma release exige la credencial y falla en el momento con un mensaje claro.
+    // gradle.startParameter.taskNames son nombres (String) de tareas solicitadas
+    val esBuildRelease = gradle.startParameter.taskNames.any {
+        it.contains("assembleRelease") || it.contains("bundleRelease") ||
+        it.contains("packageRelease") || it == "release"
+    }
+    fun requiredReleaseIf(key: String): String =
+        localProps.getProperty(key) ?: run {
+            if (esBuildRelease) error(
+                "Falta $key en android/local.properties; necesaria solo para firmar el release"
+            ) else ""
+        }
 
     signingConfigs {
         create("release") {
             storeFile = file(System.getProperty("user.home") + "/.android/dermica-release.jks")
-            storePassword = requiredRelease("RELEASE_STORE_PASSWORD")
-            keyAlias = requiredRelease("RELEASE_KEY_ALIAS")
-            keyPassword = requiredRelease("RELEASE_KEY_PASSWORD")
+            storePassword = requiredReleaseIf("RELEASE_STORE_PASSWORD")
+            keyAlias = requiredReleaseIf("RELEASE_KEY_ALIAS")
+            keyPassword = requiredReleaseIf("RELEASE_KEY_PASSWORD")
         }
     }
 
