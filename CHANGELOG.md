@@ -4,6 +4,7 @@ Cronología resumida del proyecto (S0 → release 1.0.0). Fechas reales observad
 
 | Fecha | Fase | Hito |
 |-------|------|------|
+| 2026-11-16 → 2026-11-17 | REFACTOR GRANDE (fases 0–8) | Reorganización en productos (`android/`, `pipeline/`, `model/`, `server/`), `uv` workspace único con lock pineado, `dermica-core` compartida, CI + Dependabot, Swagger pública, documentación de la API en español de los 43 `.kt` y ~40 `.py`; release 1.0.0 intacto; cero menciones a rutas fuera del repo, guardado por CI |
 | 2026-08-03 | S0 | Documentación y definición de producto; arranque del plan (5 sprints × 2 semanas) |
 | 2026-11-13 | — | Estructura inicial del monorepo (`BACKEND/` + `FRONTEND/`) |
 | 2026-11-13/14 | S1 | Auditoría ISIC 2019: 25 331 imágenes de entrenamiento, 8 238 de test, BCC ≈ 13.1 % del train |
