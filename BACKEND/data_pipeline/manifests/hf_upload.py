@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
-"""S2 paso 3: subida de manifiestos (solo texto) al repo privado dermica-dataset.
+"""S2 paso 3: subida de manifiestos (solo texto) al repo remoto privado dermica-dataset.
+
+Propósito
+---------
+Sube los manifiestos derivados de la fase de splits y de la formación de
+subconjuntos, más la configuración y la tarjeta del dataset, al repositorio
+git-remote privado `dermica-dataset` en Hugging Face (repo de tipo dataset).
+Nunca sube imágenes ni binarios: únicamente CSV/JSON/MD.
 
 Flujo de ejecución, de principio a fin:
-1. Lee credenciales HF de `dermica-bcc/.env` con un parser inline mínimo
-   (sin dependencia dotenv ni subprocesos `sed -n 's/^KEY=//p' .env`: mismo
-   patrón de extracción, sin imprimir jamás valores ni rutas absolutas).
+1. Lee credenciales HF de las variables de entorno del proceso o de un
+   archivo KEY=VALUE (`--env-file`, por defecto el .env del repo, solo
+   lectura; nunca se imprime ni se copia), con un parser inline mínimo
+   (sin dependencia dotenv ni subprocesos).
 2. Valida con `api.whoami()` que el token autoriza contra la cuenta indicada.
-3. Sube al repo de datasets privado: `splits/{train,val,test}.csv`,
-   `tesis/{tesis_manifest,tesis_exclude}.csv`, `config.json` y la tarjeta del
-   dataset como `README.md` (desde DATASET_CARD.md) vía un único `create_commit`.
+3. Sube al repo git-remote: splits (train/val/test), manifiestos de
+   subconjuntos y de exclusión, config.json y la tarjeta del dataset como
+   README.md, vía un único `create_commit` (repo: dermica-dataset, tipo
+   dataset).
 4. La compuerta `--verificar` lista el repo remoto y exige el conjunto exacto
    de archivos esperados y 0 imágenes; está separada del upload para que
    cualquier miembro pueda corroborar el estado del repo en cualquier momento
@@ -16,16 +25,38 @@ Flujo de ejecución, de principio a fin:
 
 Usa `create_commit` y no `upload_folder`: son pocos archivos pequeños y un
 único commit atómico evita llamadas API adicionales (1 commit vs N uploads).
-Jamás sube imágenes ni binarios ISIC: únicamente CSV/JSON/MD. Nunca imprime el
-token ni rutas absolutas de la máquina en la salida.
+Jamás sube imágenes ni binarios ISIC. Nunca imprime el token ni rutas
+absolutas de la máquina en la salida.
+
+Entradas
+--------
+* `--env-file ~ENV` (opcional): archivo KEY=VALUE con HF_TOKEN, HF_OWNER y
+  HF_REPO_DATASET; si falta un valor se toma de las variables de entorno del
+  proceso. Si no existe, se ignoran (todo debe venir del entorno).
+* `--splits-dir ~DIR` (obligatorio): directorio con train.csv, val.csv y
+  test.csv de la fase de splits (origen externo al repo; SOLO LECTURA).
+* `--tesis-dir ~DIR` (obligatorio): directorio con tesis_manifest.csv y
+  tesis_exclude.csv (origen externo al repo; SOLO LECTURA).
+* `--out-dir ~DIR_OUT` (obligatorio): destino del upload-log.json.
+
+Salidas
+-------
+Un único commit atómico en el git-remote `dermica-dataset` (tipo dataset) y un
+`upload-log.json` en `--out-dir` con el hash del commit, la URL del repo y la
+lista de archivos esperados. Con `--verificar` no se escribe nada: solo se
+audita el repo remoto.
 
 Uso:
-    uv run python hf_upload.py             # crea el commit con los manifiestos
-    uv run python hf_upload.py --verificar # comprueba contenido remoto (sin escribir)
+    uv run python hf_upload.py --splits-dir ~DIR_SPLITS --tesis-dir ~DIR_TESIS --out-dir ~DIR_OUT
+    uv run python hf_upload.py --splits-dir ~DIR_SPLITS --tesis-dir ~DIR_TESIS --out-dir ~DIR_OUT --verificar
+
+Cubre el trabajo de la fase S2, paso 3 — publicación de manifiestos en el
+git-remote del dataset (CRISP-DM).
 """
 
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -34,39 +65,90 @@ from pathlib import Path
 from huggingface_hub import CommitOperationAdd, HfApi
 from huggingface_hub.utils import HfHubHTTPError
 
-# Monorepo: este archivo vive en BACKEND/data_pipeline/manifests/;
-# parents[4] resuelve a .../APP_DERMICA (raíz que contiene DATA_CRUDA/ y dermica-bcc/).
-APP_ROOT = Path(__file__).resolve().parents[4]  # .../APP_DERMICA
-ENV_PATH = APP_ROOT / "dermica-bcc" / ".env"
-# parents[1] = BACKEND/data_pipeline: config.json vive junto al código
-CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
+# Raíz del repo (este archivo vive en BACKEND/data_pipeline/manifests/, tres
+# niveles por debajo de la raíz). Solo se usa para el default repo-relativo de
+# --env-file (el .env del repo, gitignored); nada del repo se modifica.
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+ENV_POR_DEFECTO = REPO_ROOT / ".env"
+# config.json vive junto al código de este pipeline (data_pipeline/) y forma
+# parte del repo: se resuelve desde __file__ para que el CWD no importe.
+# La consume collect_files().
+CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
+# Tarjeta del dataset versionada en el repo (manifests/DATASET_CARD.md).
+# La consume collect_files() para subirla como README.md del git-remote.
 DATASET_CARD = Path(__file__).resolve().parent / "DATASET_CARD.md"
-SPLITS_DIR = APP_ROOT / "resultados" / "s2-splits"
-TESIS_DIR = APP_ROOT / "resultados" / "s2-tesis"
-DEFAULT_OUT_DIR = APP_ROOT / "resultados" / "s2-hf"
+# Prefijos de carpeta DENTRO del repo git-remote (no son rutas locales):
+# así se organizan los archivos en el repo dataset de Hugging Face.
+# Los consumen collect_files(), EXPECTED y verificar().
+SPLITS_PREFIX = "splits"
+TESIS_PREFIX = "tesis"
 
-SPLITS_FILES = ("train.csv", "val.csv", "test.csv")
-TESIS_FILES = ("tesis_manifest.csv", "tesis_exclude.csv")
+SPLITS_FILES = ("train.csv", "val.csv", "test.csv")   # particiones 70/20/10 (las consume collect_files())
+TESIS_FILES = ("tesis_manifest.csv", "tesis_exclude.csv")   # manifiestos de subconjuntos (los consume collect_files())
 # Conjunto exacto esperado tras un upload correcto. Es una lista blanca:
 # verificar contra EXPECTED detecta tanto faltantes como ruido en el repo.
+# La consume verificar().
 EXPECTED = (
-    {f"splits/{f}" for f in SPLITS_FILES}
-    | {f"tesis/{f}" for f in TESIS_FILES}
+    {f"{SPLITS_PREFIX}/{f}" for f in SPLITS_FILES}
+    | {f"{TESIS_PREFIX}/{f}" for f in TESIS_FILES}
     | {"config.json", "README.md"}
 )
 # Extensiones de imagen prohibidas: ISIC nunca se redistribuye, ni siquiera por
 # error. Si la compuerta detecta una, el upload estaba equivocado y hay que borrarla.
+# La consume verificar().
 FORBIDDEN_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp", ".gif"}
 
 
-def read_env(env_path: Path) -> dict:
-    """Lee .env KEY=VALUE sin dependencias ni subprocesos.
+class _ParserEspanol(argparse.ArgumentParser):
+    """ArgumentParser con los mensajes de error en español neutro.
 
-    Equivalente al patrón `sed -n 's/^KEY=//p' .env` pero inline: ignora líneas
-    vacías y comentarios (#), desprende comillas simples/dobles de los valores y
-    JAMÁS imprime nada — el dict queda en memoria y los valores se usan solo
-    para construir el cliente HF. Los valores con '#' literal no se soportan a
-    propósito (la convención local del proyecto es KEY=valor plano).
+    argparse redacta por defecto en inglés; el pipeline de la tesis es en
+    español, así que los fallos de invocación se traducen aquí (solo el
+    texto mostrado, nunca el comportamiento ni los códigos de salida:
+    sigue siendo exit 2 ante argumentos inválidos o faltantes).
+    """
+
+    def error(self, message: str) -> None:
+        """Imprime el uso y un error en español; sale con código 2.
+
+        Parámetros
+        ----------
+        message : str
+            Detalle redactado por argparse (se conserva el dato útil, p. ej.
+            los nombres de los flags faltantes, pero se enmarca en español).
+
+        Retorno
+        -------
+        No retorna: termina el proceso con exit 2.
+        """
+        self.print_usage(sys.stderr)
+        if "the following arguments are required" in message:
+            faltan = message.split(":", 1)[1].strip()
+            self.exit(2, f"ERROR: faltan los flags obligatorios: {faltan}\n"
+                         f"Consulta --help para la ayuda completa en español.\n")
+        self.exit(2, f"ERROR: {message}\nConsulta --help para la ayuda completa en español.\n")
+
+
+def read_env(env_path: Path) -> dict:
+    """Lee un archivo KEY=VALUE estilo dotenv (inline, sin dotenv ni subprocesos).
+
+    Parámetros
+    ----------
+    env_path : Path
+        Archivo KEY=VALUE de origen; si no existe, se devuelve {} (la
+        resolución de credenciales cae entonces al entorno del proceso).
+
+    Retorno
+    -------
+    dict
+        Pares clave→valor con comillas simples/dobles desprendidas; el
+        dict queda en memoria y los valores se usan solo para construir el
+        cliente HF. Los valores con '#' literal no se soportan a propósito
+        (la convención del proyecto es KEY=valor plano). NUNCA imprime nada.
+
+    Efectos colaterales
+    -------------------
+    Ninguno (solo lectura; jamás imprime valores).
     """
     env = {}
     if not env_path.exists():
@@ -80,32 +162,65 @@ def read_env(env_path: Path) -> dict:
     return env
 
 
-def load_credentials() -> tuple[str, str]:
-    """Resuelve token + repo_id. Falla con exit 2 si falta algo en .env.
+def load_credentials(env_file: Path) -> tuple[str, str]:
+    """Resuelve token + repo_id desde el entorno del proceso o el archivo --env-file.
 
-    exit 2 = error de entorno/configuración (faltan variables); es distinto
-    del exit 1 de --verificar (repo remoto en mal estado) y de los errores
-    propios de HF, que se reportan como FAIL con su mensaje.
+    Prioridad: las variables del proceso ganan sobre el archivo (lo explícito
+    domina al implícito). El archivo nunca se imprime ni se copia.
+
+    Parámetros
+    ----------
+    env_file : Path
+        Archivo KEY=VALUE consultado como segunda fuente de credenciales.
+
+    Retorno
+    -------
+    tuple[str, str]
+        (token, repo_id) donde repo_id es "<HF_OWNER>/<HF_REPO_DATASET>" del
+        git-remote privado dermica-dataset (tipo dataset).
+
+    Errores
+    -------
+    SystemExit
+        Código 2 si falta HF_TOKEN, HF_OWNER o HF_REPO_DATASET en ambas
+        fuentes (error de entorno/configuración).
     """
-    env = read_env(ENV_PATH)
-    missing = [k for k in ("HF_TOKEN", "HF_OWNER", "HF_REPO_DATASET") if not env.get(k)]
+    file_env = read_env(env_file)
+    merged = {**file_env, **{k: v for k, v in os.environ.items() if k in ("HF_TOKEN", "HF_OWNER", "HF_REPO_DATASET")}}
+    missing = [k for k in ("HF_TOKEN", "HF_OWNER", "HF_REPO_DATASET") if not merged.get(k)]
     if missing:
-        print(f"ERROR: faltan variables en .env: {', '.join(missing)}")
+        print(f"ERROR: faltan variables en el entorno o el archivo --env-file: {', '.join(missing)}")
         sys.exit(2)
-    return env["HF_TOKEN"], f"{env['HF_OWNER']}/{env['HF_REPO_DATASET']}"
+    return merged["HF_TOKEN"], f"{merged['HF_OWNER']}/{merged['HF_REPO_DATASET']}"
 
 
-def collect_files() -> list[tuple[str, Path, str]]:
-    """Devuelve [(repo_path, local_path)] de los manifiestos a subir.
+def collect_files(splits_dir: Path, tesis_dir: Path) -> list[tuple[str, Path]]:
+    """Devuelve [(ruta_remota, ruta_local)] de los manifiestos a subir.
 
-    Falla con exit 2 (entorno) si falta algún fuente: mejor detenerse antes de
-    commitear a medias que dejar el repo HF inconsistente o engañoso.
+    Parámetros
+    ----------
+    splits_dir : Path
+        Directorio con train.csv, val.csv y test.csv de la fase de splits.
+    tesis_dir : Path
+        Directorio con tesis_manifest.csv y tesis_exclude.csv.
+
+    Retorno
+    -------
+    list[tuple[str, Path]]
+        (ruta_remota_dentro_del_git-remote, ruta_local). La ruta remota usa
+        los prefijos SPLITS_PREFIX/TESIS_PREFIX dentro del repo dataset.
+
+    Errores
+    -------
+    SystemExit
+        Código 2 (entorno) si falta algún archivo fuente: mejor detenerse
+        antes de commitear a medias que dejar el repo remoto inconsistente.
     """
     files = []
     for name in SPLITS_FILES:
-        files.append((f"splits/{name}", SPLITS_DIR / name))
+        files.append((f"{SPLITS_PREFIX}/{name}", splits_dir / name))
     for name in TESIS_FILES:
-        files.append((f"tesis/{name}", TESIS_DIR / name))
+        files.append((f"{TESIS_PREFIX}/{name}", tesis_dir / name))
     files.append(("config.json", CONFIG_PATH))
     files.append(("README.md", DATASET_CARD))
     for repo_path, local in files:
@@ -115,8 +230,34 @@ def collect_files() -> list[tuple[str, Path, str]]:
     return files
 
 
-def upload(api: HfApi, repo_id: str) -> dict:
+def upload(api: HfApi, repo_id: str, splits_dir: Path, tesis_dir: Path) -> dict:
     """Crea un único commit atómico con todos los manifiestos.
+
+    Parámetros
+    ----------
+    api : HfApi
+        Cliente autenticado contra Hugging Face (ver load_credentials()).
+    repo_id : str
+        "<owner>/<repo>" del git-remote privado dermica-dataset (tipo dataset).
+    splits_dir : Path
+        Directorio con las particiones 70/20/10 (entrada de collect_files()).
+    tesis_dir : Path
+        Directorio con los manifiestos de subconjuntos (entrada de collect_files()).
+
+    Retorno
+    -------
+    dict
+        {"commit": str, "repo": str, "url": str} del commit creado.
+
+    Errores
+    -------
+    HfHubHTTPError
+        Propagada desde la API del git-remote ante fallos de red, permisos o
+        estado del repo (el llamador la deja ver con su mensaje).
+
+    Efectos colaterales
+    -------------------
+    Escribe en el git-remote `dermica-dataset` (un único commit atómico).
 
     `create_commit` con 7 operaciones Add: una sola llamada API para todo el
     conjunto (upload_folder generaría más tráfico y menos control sobre qué
@@ -124,7 +265,7 @@ def upload(api: HfApi, repo_id: str) -> dict:
     """
     operations = [
         CommitOperationAdd(path_in_repo=repo_path, path_or_fileobj=str(local))
-        for repo_path, local in collect_files()
+        for repo_path, local in collect_files(splits_dir, tesis_dir)
     ]
     commit = api.create_commit(
         repo_id=repo_id,
@@ -138,8 +279,25 @@ def upload(api: HfApi, repo_id: str) -> dict:
 def verificar(api: HfApi, repo_id: str) -> int:
     """Compuerta de conformidad: auth, archivos exactos, cero imágenes.
 
+    Parámetros
+    ----------
+    api : HfApi
+        Cliente autenticado contra Hugging Face.
+    repo_id : str
+        "<owner>/<repo>" del git-remote privado dermica-dataset (tipo dataset).
+
+    Retorno
+    -------
+    int
+        0 si el repo remoto cumple la lista blanca EXPECTED y no hay imágenes;
+        1 en caso contrario (o si la autenticación falla).
+
+    Efectos colaterales
+    -------------------
+    Ninguno (solo lectura contra el git-remote; nunca escribe).
+
     Se mantiene separado del upload a propósito: el equipo puede corroborar el
-    estado del repo HF antes o después de subir (o tras un fallo parcial) sin
+    estado del repo ANTES o DESPUÉS de subir (o tras un fallo parcial) sin
     riesgo de escribir. Falla (exit 1) si falta algún esperado o aparece una
     imagen; extra no bloquea (aviso informativo). La tarjeta lleva
     `license: cc-by-nc-4.0` en front-matter — convención de HF para metadatos
@@ -176,24 +334,37 @@ def verificar(api: HfApi, repo_id: str) -> int:
 def main() -> int:
     """CLI: sube por defecto; `--verificar` solo audita (nunca escribe).
 
-    Contrato: la única ruta que escribe en HF es la llamada a upload();
-    --verificar es read-only. Código de retorno: 0 OK, 1 fallo de verificación
-    o de HF, 2 error de entorno (faltan variables o fuente local).
+    Contrato: la única ruta que escribe en el git-remote es la llamada a
+    upload(); --verificar es read-only. Código de retorno: 0 OK, 1 fallo de
+    verificación o de HF, 2 error de entorno (faltan variables o fuente local).
+
+    Efectos colaterales
+    -------------------
+    Sin --verificar: crea el commit en el git-remote y escribe
+    <out-dir>/upload-log.json. Con --verificar: no escribe nada.
     """
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--verificar", action="store_true", help="solo audita el repo remoto")
-    ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    ap = _ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--splits-dir", type=Path, required=True, metavar="~DIR_SPLITS",
+                    help="directorio con train.csv, val.csv y test.csv de la fase de splits")
+    ap.add_argument("--tesis-dir", type=Path, required=True, metavar="~DIR_TESIS",
+                    help="directorio con tesis_manifest.csv y tesis_exclude.csv")
+    ap.add_argument("--out-dir", type=Path, required=True, metavar="~DIR_OUT",
+                    help="directorio donde se escribe upload-log.json")
+    ap.add_argument("--env-file", type=Path, default=ENV_POR_DEFECTO, metavar="~ENV",
+                    help="archivo KEY=VALUE con HF_TOKEN/HF_OWNER/HF_REPO_DATASET (default: .env de la raíz)")
+    ap.add_argument("--verificar", action="store_true",
+                    help="solo audita el repo remoto (sin escribir)")
     args = ap.parse_args()
 
     t0 = time.time()
-    token, repo_id = load_credentials()
+    token, repo_id = load_credentials(args.env_file)
     api = HfApi(token=token)
 
     if args.verificar:
         return verificar(api, repo_id)
 
-    print(f"subiendo manifiestos a {repo_id} (privado)...")
-    result = upload(api, repo_id)
+    print(f"subiendo manifiestos a {repo_id} (git-remote privado)...")
+    result = upload(api, repo_id, args.splits_dir, args.tesis_dir)
     result["segundos"] = round(time.time() - t0, 2)
     result["generado_utc"] = datetime.now(timezone.utc).isoformat()
     result["archivos"] = sorted(EXPECTED)

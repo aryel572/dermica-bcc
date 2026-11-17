@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Paso 1 de S2: formación de TESIS desde el ISIC 2019 crudo (fase de preparación, CRISP-DM).
+"""Paso 1 de S2: formación de TESIS desde el ISIC 2019 crudo (preparación, CRISP-DM).
 
+Propósito
+---------
 Forma TESIS: 30 subconjuntos × 15 imágenes muestreadas del set de training de
-ISIC 2019 con una semilla fija desde BACKEND/data_pipeline/config.json. Cada
-subconjunto contiene >= min_bcc_per_subset imágenes BCC (muestreo guiado, no
-random crudo). Las imágenes pueden repetirse entre subconjuntos. El split TEST
-de ISIC 2019 nunca se toca.
+ISIC 2019 con una semilla fija desde `config.json` (semilla 42). Cada
+subconjunto contiene al menos `min_bcc_per_subset` imágenes BCC (muestreo
+guiado, no random crudo). Las imágenes pueden repetirse entre subconjuntos.
+El split TEST de ISIC 2019 nunca se toca.
 
 QUÉ ES TESIS Y POR QUÉ EXISTE
 -----------------------------
@@ -44,14 +46,24 @@ Tres consecuencias de ese propósito guían cada decisión de diseño aquí:
      positiva SOLO en el paquete de demo; no afecta a los datos de
      entrenamiento ni a las métricas.
 
-Este script lee ÚNICAMENTE el zip de training y los CSV GT/metadata de
-training. El split TEST de ISIC 2019 nunca se abre, lista, hashea ni copia — no
+Este script lee ÚNICAMENTE el zip de training y el CSV GT de training. El split
+TEST de ISIC 2019 nunca se abre, lista, hashea ni copia — no
 tiene lesion_id, ~24,9 % de etiquetas UNK y se reserva exclusivamente para la
 evaluación final. No agregues aquí ningún camino de código que referencie los
 archivos de test.
 
-SALIDAS (bajo --out-dir, por defecto resultados/s2-tesis/)
-----------------------------------------------------------
+Entradas
+--------
+* `--data-dir ~DIR` (obligatorio): directorio con los archivos crudos de
+  ISIC 2019 de training (zip + GT). Origen EXTERNO al repo;
+  SOLO LECTURA.
+* `--out-dir ~DIR_OUT` (obligatorio): destino de los artefactos
+  manifiesto/exclusión/resumen (texto, fuera del repo).
+* `--tesis-dir ~DIR_TESIS` (obligatorio): destino de las imágenes copiadas
+  (`<tesis-dir>/<subset_id>/<image_id>.jpg`, fuera del repo).
+
+Salidas (bajo `--out-dir`)
+--------------------------
   tesis_manifest.csv  una fila por pick (subset_id, image_id) con etiqueta,
                       sha256 del archivo copiado y la ruta de entrada original
                       dentro del zip
@@ -62,14 +74,12 @@ SALIDAS (bajo --out-dir, por defecto resultados/s2-tesis/)
                       procedencia de los artefactos
   README-corrida.md   (lo escribe un paso posterior, no este script)
 
-Las imágenes copiadas aterrizan en TESIS/<subset_id>/<isic_id>.jpg (bajo la
-raíz del workspace, fuera del repo), nunca en .git — ver las reglas de
-.gitignore para TESIS/.
-
 Uso:
-    uv run python form_tesis.py                 # forma TESIS y escribe artefactos
-    uv run python form_tesis.py --force         # sobrescribe las copias TESIS/ existentes
-    uv run python form_tesis.py --verificar resultados/s2-tesis/tesis_manifest.csv
+    uv run python form_tesis.py --data-dir ~DIR --out-dir ~DIR_OUT --tesis-dir ~DIR_TESIS
+    uv run python form_tesis.py --data-dir ~DIR --out-dir ~DIR_OUT --tesis-dir ~DIR_TESIS --force
+    uv run python form_tesis.py --data-dir ~DIR --out-dir ~DIR_OUT --tesis-dir ~DIR_TESIS --verificar ~DIR_OUT/tesis_manifest.csv
+
+Cubre el trabajo de la fase S2, paso 1 — preparación de datos (CRISP-DM).
 """
 
 import argparse
@@ -85,35 +95,56 @@ from pathlib import Path
 
 import pandas as pd
 
-# Layout del repo: APP_DERMICA/ es el contenedor del workspace; dermica-bcc/ es
-# el repo git dentro de él y este archivo vive en BACKEND/data_pipeline/tesis/.
-# parents[0]=tesis/, parents[1]=data_pipeline/, parents[2]=BACKEND/,
-# parents[3]=dermica-bcc/, parents[4]=APP_DERMICA/ (contiene DATA_CRUDA/,
-# resultados/, TESIS/). Se resuelve desde __file__ para que el CWD no importe.
-APP_ROOT = Path(__file__).resolve().parents[4]  # .../APP_DERMICA
-
-# config.json vive junto a este pipeline (data_pipeline/config.json). Es la
-# única fuente de verdad para la semilla y la forma de TESIS; no incrustes estos
-# valores — la tesis cita config.json como contrato congelado.
-CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
-DEFAULT_DATA_DIR = APP_ROOT / "DATA_CRUDA"
-DEFAULT_OUT_DIR = APP_ROOT / "resultados" / "s2-tesis"
-DEFAULT_TESIS_DIR = APP_ROOT / "TESIS"
-TRAIN_ZIP = "ISIC_2019_Training_Input.zip"
-GT_TRAIN = "ISIC_2019_Training_GroundTruth.csv"
-META_TRAIN = "ISIC_2019_Training_Metadata.csv"
+# config.json vive junto al código de este pipeline (data_pipeline/) y forma
+# parte del repo: es la única fuente de verdad para la semilla y la forma de
+# TESIS; no incrustes estos valores — la tesis cita config.json como contrato
+# congelado. La resuelven form() y verificar().
+CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
+TRAIN_ZIP = "ISIC_2019_Training_Input.zip"   # zip de training de ISIC 2019; nunca se extrae masivamente
+GT_TRAIN = "ISIC_2019_Training_GroundTruth.csv"   # etiquetas one-hot de training
 
 # Orden de columnas one-hot exactamente como lo entrega el CSV GroundTruth de
 # ISIC 2019. Se usa para resolver la etiqueta vía idxmax (el GT es
 # mono-etiqueta: exactamente una columna en hot por fila, invariante que
 # garantiza la auditoría S1 antes de llegar aquí). SCC está presente en el
-# formato GT aunque no se usa en el resto del pipeline.
+# formato GT aunque no se usa en el resto del pipeline. La consume load_train_labels().
 CLASS_COLS = ["MEL", "NV", "BCC", "AK", "BKL", "DF", "VASC", "SCC", "UNK"]
 
 # Carpeta de primer nivel DENTRO del zip de training; las entradas se direccionan
 # como f"{ZIP_PREFIX}{image_id}.jpg". El zip nunca se extrae masivamente: cada
 # entrada elegida se transmite individualmente (ver el bucle de copia en form()).
+# La consume form().
 ZIP_PREFIX = "ISIC_2019_Training_Input/"
+
+
+class _ParserEspanol(argparse.ArgumentParser):
+    """ArgumentParser con los mensajes de error en español neutro.
+
+    argparse redacta por defecto en inglés; el pipeline de la tesis es en
+    español, así que los fallos de invocación se traducen aquí (solo el
+    texto mostrado, nunca el comportamiento ni los códigos de salida:
+    sigue siendo exit 2 ante argumentos inválidos o faltantes).
+    """
+
+    def error(self, message: str) -> None:
+        """Imprime el uso y un error en español; sale con código 2.
+
+        Parámetros
+        ----------
+        message : str
+            Detalle redactado por argparse (se conserva el dato útil, p. ej.
+            los nombres de los flags faltantes, pero se enmarca en español).
+
+        Retorno
+        -------
+        No retorna: termina el proceso con exit 2.
+        """
+        self.print_usage(sys.stderr)
+        if "the following arguments are required" in message:
+            faltan = message.split(":", 1)[1].strip()
+            self.exit(2, f"ERROR: faltan los flags obligatorios: {faltan}\n"
+                         f"Consulta --help para la ayuda completa en español.\n")
+        self.exit(2, f"ERROR: {message}\nConsulta --help para la ayuda completa en español.\n")
 
 
 def sha256_file(path: Path) -> str:
@@ -129,13 +160,20 @@ def sha256_file(path: Path) -> str:
     str
         Digest hex en minúsculas (64 chars).
 
+    Errores
+    -------
+    FileNotFoundError
+        Si `path` no existe (p. ej. copia borrada entre corridas).
+    OSError
+        Ante fallos de E/S durante la lectura.
+
     Efectos colaterales
     -------------------
     Ninguno (solo lectura). La lectura en chunks mantiene la memoria en
     O(1 MiB); el hash se calcula sobre el archivo COPIADO en disco (no sobre
     los bytes de la entrada del zip en memoria), así que el manifiesto prueba
-    lo que realmente se escribió en TESIS/, que es lo que --verificar
-    vuelve a comprobar.
+    lo que realmente se escribió en la carpeta de destino, que es lo que
+    --verificar vuelve a comprobar.
     """
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -150,7 +188,7 @@ def load_train_labels(data_dir: Path) -> pd.Series:
     Parámetros
     ----------
     data_dir : Path
-        Raíz de DATA_CRUDA que contiene GT_TRAIN.
+        Directorio con los CSV crudos de ISIC 2019 que contiene GT_TRAIN.
 
     Retorno
     -------
@@ -161,9 +199,14 @@ def load_train_labels(data_dir: Path) -> pd.Series:
         son imposibles por ese invariante, y la auditoría S1 lo garantiza antes
         de que esto se ejecute.
 
+    Errores
+    -------
+    FileNotFoundError / pd.errors.ParserError
+        Si el GT no existe o no es parseable.
+
     Efectos colaterales
     -------------------
-    Parseo del CSV en solo lectura. NO abre el GT de test de ISIC.
+    Parseo del CSV en solo lectura. NUNCA abre el GT de test de ISIC.
     """
     gt = pd.read_csv(data_dir / GT_TRAIN)
     labels = gt[CLASS_COLS].idxmax(axis=1)
@@ -204,6 +247,12 @@ def pick_subset(rng: random.Random, bcc_ids: list, rest_ids: list, n_bcc: int, n
         manifiesto no codifique "primero los picks BCC, luego el resto" (el
         orden barajado es el que conserva el bucle de copia y el manifiesto).
 
+    Errores
+    -------
+    ValueError
+        Si bcc_ids o rest_ids tienen menos elementos que n_bcc / n_total - n_bcc
+        (rng.sample falla con un mensaje claro; ver nota en form()).
+
     Efectos colaterales
     -------------------
     Avanza el estado de rng. No toca archivos.
@@ -223,13 +272,13 @@ def form(data_dir: Path, out_dir: Path, tesis_dir: Path, force: bool) -> int:
          disponibles fallaría en rng.sample con un error claro, aceptable para
          un paso de pipeline de una sola sentada.
       2. Carga las etiquetas de training; separa los ids en pools BCC / resto.
-      3. Se niega a sobrescribir un TESIS/ no vacío salvo que force=True — la
+      3. Se niega a sobrescribir un tesis_dir no vacío salvo que force=True — la
          guarda existe para que una reejecución no mezcle en silencio copias
          viejas y nuevas con semillas distintas.
       4. Sortea los 30 subconjuntos desde UN único RNG seedeado
          (orden: subset_01..30).
       5. Copia por streaming cada entrada elegida desde el zip de training a
-         TESIS/<subset_id>/<image_id>.jpg (chunks de 1 MiB, nunca extractall) y
+         tesis_dir/<subset_id>/<image_id>.jpg (chunks de 1 MiB, nunca extractall) y
          hashea el archivo copiado en disco.
       6. Escribe tesis_manifest.csv, tesis_exclude.csv (ids deduplicados) y
          summary.json; imprime un recibo de una línea.
@@ -237,11 +286,11 @@ def form(data_dir: Path, out_dir: Path, tesis_dir: Path, force: bool) -> int:
     Parámetros
     ----------
     data_dir : Path
-        Raíz de DATA_CRUDA.
+        Directorio con los archivos crudos de ISIC 2019 de training (zip + GT).
     out_dir : Path
         Destino de los artefactos manifiesto/exclusión/resumen.
     tesis_dir : Path
-        Destino de las imágenes copiadas (TESIS/<subset_id>/...).
+        Destino de las imágenes copiadas (tesis_dir/<subset_id>/...).
     force : bool
         Si True, permite escribir en un tesis_dir existente no vacío.
 
@@ -249,6 +298,12 @@ def form(data_dir: Path, out_dir: Path, tesis_dir: Path, force: bool) -> int:
     -------
     int
         0 en caso de éxito; 1 si tesis_dir existe y no está vacío sin force.
+
+    Errores
+    -------
+    zipfile.BadZipFile / KeyError
+        Si el zip no es válido o una entrada esperada no existe dentro de él
+        (dataset corrupto o zip equivocado; el traceback lo delata).
 
     Efectos colaterales
     -------------------
@@ -356,7 +411,7 @@ def form(data_dir: Path, out_dir: Path, tesis_dir: Path, force: bool) -> int:
     return 0
 
 
-def verificar(manifest_path: Path) -> int:
+def verificar(manifest_path: Path, data_dir: Path, tesis_dir: Path) -> int:
     """Reverifica un tesis_manifest.csv contra el GT, la config y los archivos copiados.
 
     Chequeos (todos se ejecutan; sin salida temprana, así se imprimen todos los
@@ -369,42 +424,48 @@ def verificar(manifest_path: Path) -> int:
       5. el label_full del manifiesto coincide con la etiqueta del GT para cada id;
       6. cada subconjunto contiene >= min_bcc imágenes BCC (el contrato de
          muestreo guiado);
-      7. cada archivo copiado existe en TESIS/<subset_id>/<image_id>.jpg y su
+      7. cada archivo copiado existe en <tesis-dir>/<subset_id>/<image_id>.jpg y su
          SHA-256 coincide con el del manifiesto — es decir, las copias en disco
          son exactamente lo que se eligió, no sobreescrituras viejas de una
          corrida anterior.
 
     Por qué StratifiedGroupKFold (y no un shuffle random plano) en el split
     posterior — contexto de lo que este manifiesto protege: tras excluir los
-    ids de TESIS, la partición de training sigue conteniendo varias imágenes
+    ids del manifiesto, la partición de training sigue conteniendo varias imágenes
     por lesion_id (la misma lesión, tomas distintas). Un shuffle aleatorio a
     nivel de imagen dispersaría recortes casi idénticos de la misma lesión
     entre train/val/test, filtrando señal específica de la lesión e inflando
     todas las métricas. El split debe agrupar por lesion_id (ninguna lesión en
     dos particiones) y mantener balanceada la prevalencia de BCC (~13,1 %)
     entre particiones — de ahí un fold ESTRATIFICADO Y AGRUPADO
-    (StratifiedGroupKFold), nunca RandomShuffleSplit. La exclusión de TESIS es
-    la primera mitad de esa higiene; este verificador es el recibo de que
-    TESIS es un conjunto sonda limpio y retenido.
-
-    Nota: --verificar lee DEFAULT_DATA_DIR y DEFAULT_TESIS_DIR (los valores por
-    defecto del repo), NO los flags --data-dir/--tesis-dir — la verificación
-    está pensada para comprobar las ubicaciones canónicas que produjo una
-    corrida real.
+    (StratifiedGroupKFold), nunca RandomShuffleSplit. La exclusión de los ids
+    del manifiesto es la primera mitad de esa higiene; este verificador es el
+    recibo de que TESIS es un conjunto sonda limpio y retenido.
 
     Parámetros
     ----------
     manifest_path : Path
         Ruta a tesis_manifest.csv producido por form().
+    data_dir : Path
+        Directorio con los CSV crudos de ISIC 2019 de training (GT); se
+        resuelve por CLI (--data-dir), no se asume ninguna ubicación fija.
+    tesis_dir : Path
+        Directorio con las imágenes copiadas (<tesis-dir>/<subset_id>/...); se
+        resuelve por CLI (--tesis-dir), no se asume ninguna ubicación fija.
 
     Retorno
     -------
     int
         0 si todos los chequeos pasan, 1 en caso contrario.
 
+    Errores
+    -------
+    FileNotFoundError / pd.errors.ParserError
+        Si el manifiesto o el GT no existen o no son parseables.
+
     Efectos colaterales
     -------------------
-    Solo lectura: hashea los archivos copiados bajo DEFAULT_TESIS_DIR y
+    Solo lectura: hashea los archivos copiados bajo tesis_dir y
     parsea el CSV GT. No escribe nada.
     """
     t0 = time.time()
@@ -432,7 +493,7 @@ def verificar(manifest_path: Path) -> int:
           f"{n_subsets} subconjuntos válidos")
     check(df.groupby("subset_id").size().eq(per_subset).all(), f"{per_subset} imágenes por subconjunto")
 
-    labels = load_train_labels(DEFAULT_DATA_DIR)
+    labels = load_train_labels(data_dir)
     check(df["image_id"].isin(labels.index).all(), "todas las image_id ⊆ ground truth train")
     check(labels[df["image_id"]].eq(df["label_full"].values).all(), "label_full coincide con el GT")
 
@@ -440,7 +501,6 @@ def verificar(manifest_path: Path) -> int:
     bcc = bcc.reindex([f"subset_{i:02d}" for i in range(1, n_subsets + 1)], fill_value=0)
     check(bcc.ge(min_bcc).all(), f"≥{min_bcc} BCC por subconjunto (min={int(bcc.min())})")
 
-    tesis_dir = DEFAULT_TESIS_DIR
     missing, bad_hash = [], []
     for r in df.itertuples():
         p = tesis_dir / r.subset_id / f"{r.image_id}.jpg"
@@ -465,16 +525,20 @@ def main() -> int:
     Ver form()/verificar(); aquí no ocurre nada más allá de parsear argumentos
     y delegar.
     """
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
-    ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
-    ap.add_argument("--tesis-dir", type=Path, default=DEFAULT_TESIS_DIR)
-    ap.add_argument("--force", action="store_true")
-    ap.add_argument("--verificar", type=Path, default=None,
+    ap = _ParserEspanol(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--data-dir", type=Path, required=True, metavar="~DIR",
+                    help="directorio con los archivos crudos de ISIC 2019 de training (zip + GT)")
+    ap.add_argument("--out-dir", type=Path, required=True, metavar="~DIR_OUT",
+                    help="directorio donde se escriben tesis_manifest.csv, tesis_exclude.csv y summary.json")
+    ap.add_argument("--tesis-dir", type=Path, required=True, metavar="~DIR_TESIS",
+                    help="directorio donde se copian las imágenes (<DIR_TESIS>/<subset_id>/<image_id>.jpg)")
+    ap.add_argument("--force", action="store_true",
+                    help="permite escribir en un --tesis-dir existente no vacío (sobrescribe copias)")
+    ap.add_argument("--verificar", type=Path, default=None, metavar="~CSV",
                     help="ruta a tesis_manifest.csv; corre verificaciones sin escribir")
     args = ap.parse_args()
     if args.verificar is not None:
-        return verificar(args.verificar)
+        return verificar(args.verificar, args.data_dir, args.tesis_dir)
     return form(args.data_dir, args.out_dir, args.tesis_dir, args.force)
 
 
