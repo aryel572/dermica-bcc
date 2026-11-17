@@ -71,6 +71,13 @@ dependencies {
     implementation("androidx.room:room-ktx:2.8.5")
     ksp("androidx.room:room-compiler:2.8.5")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    // SAF ACTION_OPEN_DOCUMENT_TREE: DocumentsContract con buen manejo de Uri (S9).
+    implementation("androidx.documentfile:documentfile:1.0.1")
+    // ViewModel + StateFlow para el orquestador del modo subconjunto (S2/S9).
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
+    // JSON de referencia en JVM y Android con la misma API (el org.json de Android
+    // es un stub en tests unitarios JVM; el artefacto Maven trae la implementación).
+    implementation("org.json:json:20240303")
     // LiteRT (sucesor oficial de TFLite): runtime de inferencia on-device (S9).
     // La API Java conserva el paquete org.tensorflow.lite: artefacto renombrado, paquete no.
     implementation("com.google.ai.edge.litert:litert:2.3.2")
