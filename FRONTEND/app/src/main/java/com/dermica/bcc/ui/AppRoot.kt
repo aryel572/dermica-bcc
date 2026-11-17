@@ -24,6 +24,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import com.dermica.bcc.data.history.HistoryDatabase
 import com.dermica.bcc.data.history.HistoryRepository
 import com.dermica.bcc.data.model.ModelManager
@@ -33,7 +36,8 @@ import com.dermica.bcc.ml.BccPredictor
 import com.dermica.bcc.ui.history.HistoryScreen
 import com.dermica.bcc.ui.home.HomeScreen
 import com.dermica.bcc.ui.result.ResultScreen
-import com.dermica.bcc.ui.subset.SubsetPlaceholderScreen
+import com.dermica.bcc.ui.subset.SubsetScreen
+import com.dermica.bcc.ui.subset.SubsetViewModel
 import kotlinx.coroutines.launch
 
 /** Rutas de la app (single activity, S9). RESULT/SUBSET no muestran bottom navigation. */
@@ -53,6 +57,8 @@ private enum class AppRoute {
  * - Crea/libera el BccPredictor según ModelState (se cierra al salir de la app).
  * - Ejecuta la predicción de imagen única y guarda el resultado en el historial
  *   ANTES de navegar a RESULT (S6: el historial refleja cada predicción).
+ * - Aloja la ruta SUBSET: crea el SubsetViewModel acotado a la pantalla y navega
+ *   a HISTORY al terminar (flujo completo en SubsetScreen/SubsetViewModel).
  *
  * Las pantallas no conocen el Repository ni el Predictor: reciben estado + callbacks.
  */
@@ -188,7 +194,27 @@ fun AppRoot() {
                     }
                 }
 
-                AppRoute.SUBSET -> SubsetPlaceholderScreen(onBack = { route = AppRoute.HOME })
+                AppRoute.SUBSET -> {
+                    // viewModel acotado a esta pantalla: sobrevive a rotaciones; la corrida
+                    // y su cancelación viven en viewModelScope (S2). El predictor del flujo
+                    // subconjunto lo crea el VM perezosamente desde el archivo verificado.
+                    val subsetViewModel: SubsetViewModel = viewModel(
+                        factory = viewModelFactory {
+                            initializer {
+                                SubsetViewModel(
+                                    modelFileProvider = { modelManager.modelFile() },
+                                    repository = repository,
+                                )
+                            }
+                        },
+                    )
+                    SubsetScreen(
+                        modelState = modelState,
+                        viewModel = subsetViewModel,
+                        onBack = { route = AppRoute.HOME },
+                        onViewHistory = { route = AppRoute.HISTORY },
+                    )
+                }
             }
         }
     }
