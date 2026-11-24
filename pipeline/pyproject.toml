@@ -8,7 +8,7 @@ description = "Pipeline de datos ISIC 2019: auditoría, subconjuntos TESIS, spli
 requires-python = ">=3.12"
 dependencies = [
     "dermica-core",
-    "pandas==2.3.3",
+    "pandas==3.1.1",
     "pillow==13.0.0",
     "matplotlib==3.11.2",
     "scikit-learn==1.9.1",
