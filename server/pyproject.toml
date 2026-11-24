@@ -7,7 +7,7 @@ version = "1.0.0"
 description = "FastAPI pública: distribución del modelo 1.0.0 (/healthz, /model/version, /model/latest, /model/download)."
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi==0.163.1",
+    "fastapi==0.165.0",
     "uvicorn==0.54.0",
     "huggingface-hub==2.4.0",
 ]
