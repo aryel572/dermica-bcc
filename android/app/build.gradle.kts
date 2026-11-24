@@ -103,7 +103,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     // JSON de referencia en JVM y Android con la misma API (el org.json de Android
     // es un stub en tests unitarios JVM; el artefacto Maven trae la implementación).
-    implementation("org.json:json:20240303")
+    implementation("org.json:json:20260814")
     // LiteRT (sucesor oficial de TFLite): runtime de inferencia on-device (S9).
     // La API Java conserva el paquete org.tensorflow.lite: artefacto renombrado, paquete no.
     implementation("com.google.ai.edge.litert:litert:2.3.2")
