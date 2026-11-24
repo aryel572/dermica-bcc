@@ -1,6 +1,6 @@
 # Dependencias del servidor para Render (render.yaml: buildCommand pip install -r requirements.txt).
 # Mismo contenido y versiones que server/pyproject.toml (miembro del workspace uv).
 # Cambiar una implica cambiar ambas.
-fastapi==0.163.1
+fastapi==0.165.0
 uvicorn==0.54.0
 huggingface-hub==2.4.0
