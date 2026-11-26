@@ -1,8 +1,12 @@
 # Dependabot semanal — actualizaciones minor agrupadas en un solo PR por ecosistema;
 # majors llegan sueltas para revisión manual.
 version: 2
+# Desactivado tras el release 1.0.0: los bumps automaticos llegaban como majors
+# incompatibles con Gradle/AGP y con las versiones pineadas del workspace.
+# Reactivar solo tras corregir CI y decidir una politica de actualizaciones.
 updates:
   - package-ecosystem: "gradle"
+    enabled: false
     directory: "/android"
     schedule:
       interval: "weekly"
@@ -12,6 +16,7 @@ updates:
 
   # pip por cada pyproject.toml del workspace uv (raíz virtual + miembros virtuales)
   - package-ecosystem: "pip"
+    enabled: false
     directory: "/"
     schedule:
       interval: "weekly"
@@ -20,6 +25,7 @@ updates:
         update-types: ["minor"]
 
   - package-ecosystem: "pip"
+    enabled: false
     directory: "/shared"
     schedule:
       interval: "weekly"
@@ -28,6 +34,7 @@ updates:
         update-types: ["minor"]
 
   - package-ecosystem: "pip"
+    enabled: false
     directory: "/pipeline"
     schedule:
       interval: "weekly"
@@ -36,6 +43,7 @@ updates:
         update-types: ["minor"]
 
   - package-ecosystem: "pip"
+    enabled: false
     directory: "/model"
     schedule:
       interval: "weekly"
@@ -44,6 +52,7 @@ updates:
         update-types: ["minor"]
 
   - package-ecosystem: "pip"
+    enabled: false
     directory: "/server"
     schedule:
       interval: "weekly"
